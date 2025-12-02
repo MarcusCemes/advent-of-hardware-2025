@@ -1,0 +1,53 @@
+[*]
+[*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
+[*] Mon Dec  1 23:41:34 2025
+[*]
+[dumpfile] "/home/marcus/dev/experimental/advent-of-code-2025/src/test_day_01.vcd"
+[dumpfile_mtime] "Mon Dec  1 23:40:24 2025"
+[dumpfile_size] 924086
+[savefile] "/home/marcus/dev/experimental/advent-of-code-2025/src/day_01.gtkw"
+[timestart] 0
+[size] 1728 973
+[pos] -1 -1
+*-6.000000 249 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] TOP.
+[treeopen] TOP.test_day_01.
+[treeopen] TOP.test_day_01.dut.
+[sst_width] 297
+[signals_width] 142
+[sst_expanded] 1
+[sst_vpaned_height] 287
+@28
+TOP.test_day_01.rst
+TOP.test_day_01.clk
+@200
+-
+@28
+TOP.test_day_01.dut.decoder.i_busy
+TOP.test_day_01.dut.decoder.i_valid
+@820
+TOP.test_day_01.dut.decoder.i_data[7:0]
+@29
+TOP.test_day_01.dut.decoder.r_stage
+@28
+TOP.test_day_01.dut.decoder.r_right
+@24
+TOP.test_day_01.dut.decoder.r_count[31:0]
+@28
+TOP.test_day_01.dut.decoder.o_busy
+TOP.test_day_01.dut.decoder.o_valid
+@200
+-
+@24
+TOP.test_day_01.dut.solver.i_count[31:0]
+@28
+TOP.test_day_01.dut.solver.r_right
+@24
+TOP.test_day_01.dut.solver.r_count[31:0]
+TOP.test_day_01.dut.solver.r_state[31:0]
+TOP.test_day_01.dut.solver.o_answer[31:0]
+@28
+TOP.test_day_01.dut.solver.o_busy
+TOP.test_day_01.dut.solver.o_valid
+[pattern_trace] 1
+[pattern_trace] 0
