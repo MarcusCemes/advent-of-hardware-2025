@@ -9,13 +9,14 @@ module Day01 (
     o_busy  : output logic    ,
     o_valid : output logic    ,
 ) {
+    // Internal signals
     var count: logic<32>;
     var right: logic    ;
 
+    // Control signals (between decoder and solver)
     var decoder_valid: logic;
-
-    var solver_busy : logic;
-    var solver_valid: logic;
+    var solver_busy  : logic;
+    var solver_valid : logic;
 
     inst decoder: Day01Decoder (
         clk                   ,
@@ -56,80 +57,68 @@ module Day01Decoder (
     o_right: output logic    ,
     o_valid: output logic    ,
 ) {
-    var r_busy : logic    ;
-    var r_count: logic<32>;
-    var r_right: logic    ;
-    var r_stage: logic<2> ;
-    var r_valid: logic    ;
+    enum State: logic<2> {
+        Search,
+        Parse,
+        Finish,
+    }
 
-    var n_busy : logic    ;
-    var n_count: logic<32>;
-    var n_right: logic    ;
-    var n_stage: logic<2> ;
-    var n_valid: logic    ;
+    var state: State    ;
+    var count: logic<32>;
+    var right: logic    ;
+    var valid: logic    ;
+    var busy : logic    ;
 
     always_ff {
         if_reset {
-            r_busy  = 0;
-            r_count = 0;
-            r_right = 0;
-            r_stage = 0;
-            r_valid = 0;
+            state = State::Search;
+            count = 0;
+            right = 0;
+            valid = 0;
+            busy  = 0;
         } else {
-            r_busy  = n_busy;
-            r_count = n_count;
-            r_right = n_right;
-            r_stage = n_stage;
-            r_valid = n_valid;
-        }
-    }
-
-    always_comb {
-        n_busy  = r_busy;
-        n_count = r_count;
-        n_right = r_right;
-        n_stage = r_stage;
-        n_valid = r_valid;
-
-        case r_stage {
-            0: {
-                if i_valid {
-                    n_right = (i_data == 8'h52); // 'R'
-                    n_stage = 1;
+            case state {
+                State::Search: {
+                    if i_valid {
+                        right = (i_data == 8'h52); // 'R'
+                        state = State::Parse;
+                    }
                 }
-            }
 
-            1: {
-                if i_valid {
-                    switch {
-                        i_data == 8'h0A: { // '\n'
-                            n_busy  = 1;
-                            n_valid = 1;
-                            n_stage = 2;
-                        }
+                State::Parse: {
+                    if i_valid {
+                        switch {
+                            i_data == 8'h0A: { // '\n'
+                                busy  = 1;
+                                valid = 1;
+                                state = State::Finish;
+                            }
 
-                        i_data >= 8'h30 && i_data <= 8'h39: { // '0'-'9'
-                            n_count = (r_count * 10) + {24'0, (i_data - 8'h30)};
+                            i_data >= 8'h30 && i_data <= 8'h39: {
+                                count = (count * 10) + {24'0, (i_data - 8'h30)};
+                            }
                         }
                     }
                 }
-            }
 
-            2: {
-                if !i_busy {
-                    n_busy  = 0;
-                    n_count = 0;
-                    n_stage = 0;
-                    n_valid = 0;
+                State::Finish: {
+                    if !i_busy {
+                        busy  = 0;
+                        count = 0;
+                        valid = 0;
+                        state = State::Search;
+                    }
                 }
+
+                default: {}
             }
         }
     }
 
-    assign o_busy  = r_busy;
-    assign o_count = r_count;
-    assign o_right = r_right;
-    assign o_valid = r_valid;
+    assign o_busy  = busy;
+    assign o_count = count;
+    assign o_right = right;
+    assign o_valid = valid;
 }
 
 module Day01Solver (
@@ -144,74 +133,53 @@ module Day01Solver (
     o_busy  : output logic    ,
     o_valid : output logic    ,
 ) {
-    var r_answer: logic<32>;
-    var r_count : logic<32>;
-    var r_valid : logic    ;
-    var r_right : logic    ;
-    var r_state : logic<32>;
-
-    var n_answer: logic<32>;
-    var n_count : logic<32>;
-    var n_valid : logic    ;
-    var n_right : logic    ;
-    var n_state : logic<32>;
+    var answer: logic<32>;
+    var count : logic<32>;
+    var right : logic    ;
+    var state : logic<32>;
 
     always_ff {
         if_reset {
-            r_answer = 0;
-            r_count  = 0;
-            r_right  = 0;
-            r_state  = 50;
-            r_valid  = 0;
+            answer = 0;
+            count  = 0;
+            right  = 0;
+            state  = 50;
         } else {
-            r_answer = n_answer;
-            r_count  = n_count;
-            r_valid  = n_valid;
-            r_right  = n_right;
-            r_state  = n_state;
-        }
-    }
+            // Priority 1: If we are busy processing (count > 0)
+            if count != 0 {
+                count = count - 1;
 
-    always_comb {
-        n_answer = r_answer;
-        n_count  = r_count;
-        n_right  = r_right;
-        n_state  = r_state;
-        n_valid  = r_valid;
-
-        if r_count != 0 {
-            n_count = r_count - 1;
-
-            if r_right {
-
-                if r_state == 99 {
-                    n_answer = r_answer + 1;
-                    n_state  = 0;
+                if right {
+                    // Logic for "Right"
+                    if state == 99 {
+                        answer = answer + 1;
+                        state  = 0;
+                    } else {
+                        state = state + 1;
+                    }
                 } else {
-                    n_state = r_state + 1;
+                    // Logic for "Left" (Not Right)
+                    if state == 1 {
+                        answer = answer + 1;
+                    }
+
+                    if state == 0 {
+                        state = 99;
+                    } else {
+                        state = state - 1;
+                    }
                 }
 
-            } else {
-
-                if r_state == 1 {
-                    n_answer = r_answer + 1;
-                }
-
-                if r_state == 0 {
-                    n_state = 99;
-                } else {
-                    n_state = r_state - 1;
-                }
-
+                // Priority 2: Load new data if valid
+            } else if i_valid {
+                count = i_count;
+                right = i_right;
             }
-        } else if i_valid {
-            n_count = i_count;
-            n_right = i_right;
         }
     }
 
-    assign o_answer = r_answer;
-    assign o_busy   = r_count != 0;
+    assign o_answer = answer;
+    assign o_busy   = count != 0;
     assign o_valid  = !o_busy;
 }
 
