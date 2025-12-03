@@ -1,0 +1,303 @@
+pub module Day03 for ProtoAocSolution (
+    clk: input clock,
+    rst: input reset,
+
+    i_data : input logic<8>,
+    i_valid: input logic   ,
+
+    o_answer: output logic<64>,
+    o_busy  : output logic    ,
+    o_valid : output logic    ,
+) {
+    // Configuration constants
+    const NUM_SELECT: u32 = 12;  // Number of digits to select (12 for part 2)
+    const MAX_DIGITS: u32 = 100; // Maximum number of digits per line
+
+    // Internal signals from decoder
+    var digit_count: logic<8>              ;
+    var digits     : logic<4> [MAX_DIGITS] ;
+
+    // Control signals (between decoder and solver)
+    var decoder_valid: logic;
+    var decoder_busy : logic;
+    var solver_busy  : logic;
+    var solver_valid : logic;
+
+    inst decoder: Day03Decoder #(
+        MAX_DIGITS: MAX_DIGITS,
+    ) (
+        clk                        ,
+        rst                        ,
+        i_busy      : solver_busy  ,
+        i_data                     ,
+        i_valid                    ,
+        o_busy      : decoder_busy ,
+        o_digit_count: digit_count ,
+        o_digits    : digits       ,
+        o_valid     : decoder_valid,
+    );
+
+    inst solver: Day03Solver #(
+        NUM_SELECT: NUM_SELECT,
+        MAX_DIGITS: MAX_DIGITS,
+    ) (
+        clk                         ,
+        rst                         ,
+        i_digit_count: digit_count  ,
+        i_digits     : digits       ,
+        i_valid      : decoder_valid,
+        o_answer                    ,
+        o_busy       : solver_busy  ,
+        o_valid      : solver_valid ,
+    );
+
+    assign o_busy  = decoder_busy;
+    assign o_valid = solver_valid && !decoder_valid && !i_valid;
+}
+
+module Day03Decoder #(
+    param MAX_DIGITS: u32 = 100,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_busy : input logic   ,
+    i_data : input logic<8>,
+    i_valid: input logic   ,
+
+    o_busy       : output logic                   ,
+    o_digit_count: output logic<8>                ,
+    o_digits     : output logic<4> [MAX_DIGITS]   ,
+    o_valid      : output logic                   ,
+) {
+    enum State: logic<2> {
+        Collect,
+        Finish,
+    }
+
+    var state      : State                    ;
+    var digit_count: logic<8>                 ;
+    var digits     : logic<4> [MAX_DIGITS]    ;
+    var busy       : logic                    ;
+
+    var s_is_digit  : logic;
+    var s_is_newline: logic;
+
+    always_comb {
+        s_is_digit   = i_data >= "0" && i_data <= "9";
+        s_is_newline = i_data == 8'h0A;
+    }
+
+    always_ff {
+        if_reset {
+            state       = State::Collect;
+            digit_count = 0;
+            busy        = 0;
+
+        } else {
+            case state {
+                State::Collect: {
+                    if i_valid {
+                        if s_is_digit {
+                            digits[digit_count[6:0]] = i_data[3:0];
+                            digit_count              = digit_count + 1;
+                        } else if s_is_newline && digit_count >: 0 {
+                            busy  = 1;
+                            state = State::Finish;
+                        }
+                    }
+                }
+
+                State::Finish: {
+                    if !i_busy {
+                        busy        = 0;
+                        digit_count = 0;
+                        state       = State::Collect;
+                    }
+                }
+
+                default: {}
+            }
+        }
+    }
+
+    always_comb {
+        o_busy        = busy;
+        o_digit_count = digit_count;
+        o_digits      = digits;
+        o_valid       = state == State::Finish;
+    }
+}
+
+module Day03Solver #(
+    param NUM_SELECT: u32 = 12,
+    param MAX_DIGITS: u32 = 100,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_digit_count: input logic<8>              ,
+    i_digits     : input logic<4> [MAX_DIGITS] ,
+    i_valid      : input logic                 ,
+
+    o_answer: output logic<64>,
+    o_busy  : output logic    ,
+    o_valid : output logic    ,
+) {
+    enum State: logic<2> {
+        Idle,
+        Process,
+    }
+
+    var state      : State                 ;
+    var answer     : logic<64>             ;
+    var digits     : logic<4> [MAX_DIGITS] ; // Local copy of input digits
+    var digit_count: logic<8>              ; // Local copy of input count
+    var cursor     : logic<8>              ; // Current position in digits array
+    var remaining  : logic<8>              ; // How many more digits to select
+    var accumulator: logic<64>             ; // Building the current number
+
+    // Max finder signals
+    var s_max_val: logic<4>;
+    var s_max_idx: logic<8>;
+
+    // Calculate the end of the search window
+    // We need to leave (remaining - 1) digits after the one we select
+    // So we can search from cursor to (digit_count - remaining + 1) exclusive
+    var s_window_end: logic<8>;
+
+    always_comb {
+        // End index (exclusive) for the search window
+        s_window_end = digit_count - remaining + 1;
+    }
+
+    // Combinational max finder within the window [cursor, s_window_end)
+    always_comb {
+        s_max_val = 0;
+        s_max_idx = cursor;
+
+        for i: u32 in 0..MAX_DIGITS {
+            // Check if index is within window [cursor, s_window_end)
+            if i[7:0] >= cursor && i[7:0] <: s_window_end {
+                if digits[i] >: s_max_val {
+                    s_max_val = digits[i];
+                    s_max_idx = i[7:0];
+                }
+            }
+        }
+    }
+
+    always_ff {
+        if_reset {
+            state       = State::Idle;
+            answer      = 0;
+            digit_count = 0;
+            cursor      = 0;
+            remaining   = 0;
+            accumulator = 0;
+        } else {
+            case state {
+                State::Idle: {
+                    if i_valid {
+                        digits      = i_digits;
+                        digit_count = i_digit_count;
+                        cursor      = 0;
+                        remaining   = NUM_SELECT[7:0];
+                        accumulator = 0;
+                        state       = State::Process;
+                    }
+                }
+
+                State::Process: {
+                    if remaining >: 0 {
+                        // Append the max digit to our accumulator
+                        accumulator = accumulator * 10 + {60'b0, s_max_val};
+
+                        // Move cursor past the selected digit
+                        cursor = s_max_idx + 1;
+
+                        // One less digit to select
+                        remaining = remaining - 1;
+                    } else {
+                        // Done selecting digits, add to answer
+                        answer = answer + accumulator;
+                        state  = State::Idle;
+                    }
+                }
+
+                default: {}
+            }
+        }
+    }
+
+    always_comb {
+        o_answer = answer;
+        o_busy   = state == State::Process;
+        o_valid  = state == State::Idle;
+    }
+}
+
+#[test(test_day_03)]
+embed (inline) sv{{{
+    `timescale 1ns/1ps
+
+    module test_day_03;
+        `include "aoc_tasks.svh"
+
+        // Standard AoC signals
+        logic clk;
+        logic rst;
+        logic [7:0] i_data;
+        logic       i_valid;
+        logic [63:0] o_answer;
+        logic        o_busy;
+        logic        o_valid;
+
+        // Cycle counter
+        longint cycle_count;
+        logic counting;
+
+        aoc_Day03 dut (
+            .clk      (clk),
+            .rst      (rst),
+            .i_data   (i_data),
+            .i_valid  (i_valid),
+            .o_answer (o_answer),
+            .o_busy   (o_busy),
+            .o_valid  (o_valid)
+        );
+
+        // Clock generation (1 GHz = 1ns period)
+        initial clk = 0;
+        always #0.5 clk = ~clk;
+
+        // Cycle counter: count from first i_valid to o_valid
+        initial begin
+            cycle_count = 0;
+            counting = 0;
+        end
+        always @(posedge clk) begin
+            if (i_valid && !counting) counting <= 1;
+            if (counting && !o_valid) cycle_count <= cycle_count + 1;
+        end
+
+        // Test block: stream file, wait for result, assert answer
+        initial begin
+            aoc_init();
+            aoc_reset();
+            aoc_stream_file("day_03.txt");
+            while (!o_valid) @(posedge clk);
+            $display("[AoC] Final Answer: %0d", o_answer);
+            $display("[AoC] Cycles: %0d (%.3f ms at 1 GHz)", cycle_count, cycle_count / 1000000.0);
+            assert (o_answer == 64'd3121910778619) else $error("Answer mismatch: expected %0d, got %0d", 64'd3121910778619, o_answer);
+            $finish;
+        end
+
+        // Timeout block: fail after 1 second
+        initial begin
+            #1000000000;
+            $error("Timeout: test did not complete within 1 second");
+            $finish;
+        end
+    endmodule
+}}}
