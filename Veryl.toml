@@ -8,4 +8,11 @@ target = { type = "directory", path = "target" }
 
 [test]
 simulator = "verilator"
-include_files = ["data/day_01.txt"]
+include_files = [
+    "data/examples/day_01.txt",
+    "data/examples/day_02.txt",
+    "src/test/aoc_tasks.svh",
+]
+
+[test.verilator]
+compile_args = ["+incdir+src/test", "-Wno-TIMESCALEMOD"]

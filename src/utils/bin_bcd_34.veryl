@@ -1,0 +1,41 @@
+/// Binary to BCD converter using Double Dabble algorithm
+/// Converts a 34-bit binary number to 11 BCD digits (4 bits each)
+/// Max value: 2^34 - 1 = 17,179,869,183 (11 digits)
+/// This is purely combinational, it will have a long critical path and
+/// may not be suitable for high-frequency designs!
+module BinToBcd34 (
+    bin: input  logic<34>     ,
+    bcd: output logic<4>  [11], // 11 BCD digits, each 4 bits (unpacked array)
+) {
+    always_comb {
+        var temp  : logic<34>     ;
+        var digits: logic<4>  [11];
+        temp   = bin;
+
+        // Initialize all digits to 0
+        for j: u32 in 0..11 {
+            digits[j] = 4'b0000;
+        }
+
+        // Double Dabble: for each bit, add 3 to digits >= 5, then shift
+        for _: u32 in 0..34 {
+            // Add 3 to any digit that is >= 5
+            for j: u32 in 0..11 {
+                if digits[j] >= 5 {
+                    digits[j] = digits[j] + 3;
+                }
+            }
+
+            // Shift left through all digits, MSB of bin enters LSB of digits[0]
+            for j: u32 in 0..10 {
+                let k        : u32 = 10 - j; // Go from 10 down to 1
+                digits[k] = {digits[k][2:0], digits[k - 1][3]};
+            }
+            digits[0] = {digits[0][2:0], temp[33]};
+
+            temp = temp << 1;
+        }
+
+        bcd = digits;
+    }
+}

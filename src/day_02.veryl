@@ -1,0 +1,516 @@
+pub module Day02 for ProtoAocSolution (
+    clk: input clock,
+    rst: input reset,
+
+    i_data : input logic<8>,
+    i_valid: input logic   ,
+
+    o_answer: output logic<64>,
+    o_busy  : output logic    ,
+    o_valid : output logic    ,
+) {
+    // Internal signals
+    var from: logic<34>;
+    var to  : logic<34>;
+
+    // Control signals (between decoder and solver)
+    var decoder_valid: logic;
+    var solver_busy  : logic;
+    var solver_valid : logic;
+
+    inst decoder: Day02Decoder (
+        clk                   ,
+        rst                   ,
+        i_busy : solver_busy  ,
+        i_data                ,
+        i_valid               ,
+        o_busy                ,
+        o_from : from         ,
+        o_to   : to           ,
+        o_valid: decoder_valid,
+    );
+
+    inst solver: Day02Solver (
+        clk                    ,
+        rst                    ,
+        i_from  : from         ,
+        i_to    : to           ,
+        i_valid : decoder_valid,
+        o_answer               ,
+        o_busy  : solver_busy  ,
+        o_valid : solver_valid ,
+    );
+
+    assign o_valid = !solver_busy && !o_busy && solver_valid;
+
+}
+
+module Day02Decoder (
+    clk: input clock,
+    rst: input reset,
+
+    i_busy : input logic   ,
+    i_data : input logic<8>,
+    i_valid: input logic   ,
+
+    o_busy : output logic    ,
+    o_from : output logic<34>,
+    o_to   : output logic<34>,
+    o_valid: output logic    ,
+) {
+    enum State: logic<2> {
+        From,
+        To,
+        Finish,
+    }
+
+    var busy : logic    ;
+    var from : logic<34>;
+    var to   : logic<34>;
+    var state: State    ;
+
+    var s_comma: logic;
+    var s_dash : logic;
+    var s_digit: logic;
+
+    always_ff {
+        if_reset {
+            busy  = 0;
+            from  = 0;
+            to    = 0;
+            state = State::From;
+
+        } else {
+            case state {
+                State::From: {
+                    if i_valid {
+                        if s_digit {
+                            from = from * 10 + {26'0, i_data - "0"};
+                        } else if s_dash {
+                            state = State::To;
+                        }
+                    }
+                }
+
+                State::To: {
+                    if s_digit {
+                        to = to * 10 + {26'0, i_data - "0"};
+                    } else {
+                        busy  = 1;
+                        state = State::Finish;
+                    }
+                }
+
+                State::Finish: {
+                    if !i_busy {
+                        busy  = 0;
+                        from  = 0;
+                        to    = 0;
+                        state = State::From;
+                    }
+                }
+
+                default: {}
+            }
+        }
+    }
+
+    always_comb {
+        s_comma = i_data == ",";
+        s_dash  = i_data == "-";
+        s_digit = i_data >= "0" && i_data <= "9";
+
+        o_busy  = busy;
+        o_from  = from;
+        o_to    = to;
+        o_valid = state == State::Finish;
+    }
+}
+
+module Day02Solver (
+    clk: input clock,
+    rst: input reset,
+
+    i_from : input logic<34>,
+    i_to   : input logic<34>,
+    i_valid: input logic    ,
+
+    o_answer: output logic<64>,
+    o_busy  : output logic    ,
+    o_valid : output logic    ,
+) {
+    enum State: logic<2> {
+        Idle,
+        Decode,
+        Scan,
+    }
+
+    var answer: logic<64>;
+    var cursor: logic<34>;
+    var from  : logic<34>;
+    var to    : logic<34>;
+    var state : State    ;
+
+    var s_decoder     : logic<4> [11];
+    var s_invalid_id  : logic        ;
+    var s_more_to_scan: logic        ;
+
+    var s_digits    : logic<4>  [11];
+    var s_digits_os : logic<11>     ;
+    var s_valid_mask: logic<11>     ;
+
+    // Control signals for BcdCounter
+    var s_counter_set: logic;
+    var s_counter_inc: logic;
+
+    inst decoder: BinToBcd34 (
+        bin: from     ,
+        bcd: s_decoder,
+    );
+
+    inst bcd_counter: BcdCounter (
+        clk                   ,
+        rst                   ,
+        i_set  : s_counter_set,
+        i_inc  : s_counter_inc,
+        i_value: s_decoder    ,
+        o_value: s_digits     ,
+    );
+
+    inst digit_counter: DigitCounter (
+        i_digits    : s_digits    ,
+        o_digits_os : s_digits_os ,
+        o_valid_mask: s_valid_mask,
+    );
+
+    inst invalid_id_detector: InvalidIdDetector (
+        i_digits    : s_digits    ,
+        i_digits_os : s_digits_os ,
+        i_valid_mask: s_valid_mask,
+        o_invalid   : s_invalid_id,
+    );
+
+    always_ff {
+        if_reset {
+            answer = 0;
+            cursor = 0;
+            from   = 0;
+            to     = 0;
+            state  = State::Idle;
+
+        } else {
+            case state {
+                State::Idle: {
+                    if i_valid {
+                        cursor = i_from;
+                        from   = i_from;
+                        to     = i_to;
+                        state  = State::Decode;
+                    }
+                }
+
+                // The decoder has a lot of combinational logic, so it's
+                // better to connect this to a register to avoid timing issues
+                State::Decode: {
+                    state = State::Scan;
+                }
+
+                State::Scan: {
+                    if s_more_to_scan {
+                        if s_invalid_id {
+                            answer += {30'0, cursor};
+                        }
+
+                        cursor += 1;
+
+                    } else {
+                        state = State::Idle;
+                    }
+                }
+
+                default: {}
+            }
+        }
+    }
+
+    always_comb {
+        s_more_to_scan = cursor <= to;
+
+        // Set counter when transitioning from Decode to Scan
+        s_counter_set = state == State::Decode;
+
+        // Increment counter during Scan when there's more to scan
+        s_counter_inc = state == State::Scan && s_more_to_scan;
+    }
+
+    always_comb {
+        o_answer = answer;
+        o_busy   = state == State::Scan;
+        o_valid  = state == State::Idle;
+    }
+}
+
+// Sequential module to hold BCD digits with set and increment operations
+module BcdCounter (
+    clk: input clock,
+    rst: input reset,
+
+    i_set  : input logic        , // Load i_value into the counter
+    i_inc  : input logic        , // Increment the counter by 1
+    i_value: input logic<4> [11], // Value to load when i_set is high
+
+    o_value: output logic<4> [11], // Current counter value
+) {
+    var digits: logic<4> [11];
+
+    // Combinational increment logic
+    var s_next_digits: logic<4>  [11];
+    var s_carry      : logic<12>     ; // 12 bits to avoid overflow on carry[11]
+
+    always_comb {
+        s_carry = 12'd1;
+        for i: u32 in 0..11 {
+            s_next_digits[i] = 4'0;
+        }
+
+        for i: u32      in 0..11 {
+            let next_value: logic<4> = digits[i] + {3'0, s_carry[i]};
+
+            if next_value == 10 {
+                s_next_digits[i] = 0;
+                s_carry[i + 1]   = 1;
+            } else {
+                s_next_digits[i] = next_value;
+                s_carry[i + 1]   = 0;
+            }
+        }
+    }
+
+    always_ff {
+        if_reset {
+            for i: u32 in 0..11 {
+                digits[i] = 4'0;
+            }
+        } else {
+            if i_set {
+                digits = i_value;
+            } else if i_inc {
+                digits = s_next_digits;
+            }
+        }
+    }
+
+    always_comb {
+        o_value = digits;
+    }
+}
+
+// Combinational module to count the number of digits and create a valid mask
+module DigitCounter (
+    i_digits: input logic<4> [11],
+
+    o_digits_os : output logic<11>,
+    o_valid_mask: output logic<11>,
+) {
+    var s_digits_os: logic<11>;
+
+    always_comb {
+        s_digits_os = 11'0;
+
+        // Find the most significant non-zero digit to determine number length
+        // Scan from MSB (index 10) down to LSB (index 0)
+        // bit N means the MSB is at position N (N+1 digits)
+        // e.g., 101 has MSB at position 2, so bit 2 is set
+        for i: u32 in 0..11 {
+            let idx: u32 = 10 - i; // Scan from high to low
+            if i_digits[idx] != 0 {
+                s_digits_os = 11'd1 << idx;
+                break;
+            }
+        }
+
+        o_digits_os = s_digits_os;
+    }
+
+    // Valid digit mask: bits 0..N are set when s_digits_os[N] is set
+    // e.g., for 101 (3 digits), s_digits_os[2] is set, so s_valid_mask = 0b111 (bits 0,1,2)
+    always_comb {
+        o_valid_mask = 11'0;
+        for i: u32 in 0..11 {
+            if s_digits_os[i] {
+                // Set bits 0 through i (inclusive)
+                o_valid_mask = (11'd1 << (i + 1)) - 11'd1;
+            }
+        }
+    }
+}
+
+// Combinational module to detect invalid IDs based on repeating digit patterns
+module InvalidIdDetector (
+    i_digits    : input logic<4>  [11],
+    i_digits_os : input logic<11>     ,
+    i_valid_mask: input logic<11>     ,
+
+    o_invalid: output logic,
+) {
+    // Block size 5 (length 10): digits[0:4] == digits[5:9]
+    var s_match_5: logic;
+    always_comb {
+        s_match_5 = i_digits[0] == i_digits[5] && i_digits[1] == i_digits[6] && i_digits[2] == i_digits[7] && i_digits[3] == i_digits[8] && i_digits[4] == i_digits[9];
+    }
+
+    // Block size 4 (length 8): digits[0:3] == digits[4:7]
+    var s_match_4: logic;
+    always_comb {
+        s_match_4 = i_digits[0] == i_digits[4] && i_digits[1] == i_digits[5] && i_digits[2] == i_digits[6] && i_digits[3] == i_digits[7];
+    }
+
+    // Block size 3 (length 6, 9): digits[0:2] == digits[3:5], and optionally digits[3:5] == digits[6:8]
+    var s_match_3_0: logic;
+    var s_match_3_1: logic;
+    always_comb {
+        s_match_3_0 = i_digits[0] == i_digits[3] && i_digits[1] == i_digits[4] && i_digits[2] == i_digits[5];
+        s_match_3_1 = i_digits[3] == i_digits[6] && i_digits[4] == i_digits[7] && i_digits[5] == i_digits[8];
+    }
+
+    // Block size 2: check all consecutive pairs match first pair
+    var s_match_2: logic;
+    always_comb {
+        // Reference pair
+        let d0: logic<4> = i_digits[0];
+        let d1: logic<4> = i_digits[1];
+
+        // Check each pair against the reference
+        // A pair matches if it's outside the valid range OR equals the reference pair
+        let p1_match: logic = !i_valid_mask[3] || (i_digits[2] == d0 && i_digits[3] == d1);
+        let p2_match: logic = !i_valid_mask[5] || (i_digits[4] == d0 && i_digits[5] == d1);
+        let p3_match: logic = !i_valid_mask[7] || (i_digits[6] == d0 && i_digits[7] == d1);
+        let p4_match: logic = !i_valid_mask[9] || (i_digits[8] == d0 && i_digits[9] == d1);
+
+        // All pairs must match
+        s_match_2 = p1_match && p2_match && p3_match && p4_match;
+    }
+
+    // Block size 1: all digits in the number are the same (e.g., 11, 222, 1111, 55555)
+    var s_match_1: logic;
+
+    always_comb {
+        // Reference digit
+        let d: logic<4> = i_digits[0];
+
+        // Check each digit against the reference
+        // A position matches if it's outside the valid range OR equals the reference digit
+        let m1: logic = !i_valid_mask[1] || i_digits[1] == d;
+        let m2: logic = !i_valid_mask[2] || i_digits[2] == d;
+        let m3: logic = !i_valid_mask[3] || i_digits[3] == d;
+        let m4: logic = !i_valid_mask[4] || i_digits[4] == d;
+        let m5: logic = !i_valid_mask[5] || i_digits[5] == d;
+        let m6: logic = !i_valid_mask[6] || i_digits[6] == d;
+        let m7: logic = !i_valid_mask[7] || i_digits[7] == d;
+        let m8: logic = !i_valid_mask[8] || i_digits[8] == d;
+        let m9: logic = !i_valid_mask[9] || i_digits[9] == d;
+
+        s_match_1 = m1 && m2 && m3 && m4 && m5 && m6 && m7 && m8 && m9;
+    }
+
+    always_comb {
+        o_invalid = 0;
+
+        // i_digits_os bit positions: bit N means the MSB is at position N (N+1 digits)
+        // bit 0 = 1 digit, bit 1 = 2 digits, bit 2 = 3 digits, ..., bit 9 = 10 digits
+
+        // Block size 5 (length 10 only): digits[0:4] == digits[5:9]
+        if i_digits_os[9] {
+            o_invalid |= s_match_5;
+        }
+
+        // Block size 4 (length 8 only): digits[0:3] == digits[4:7]
+        if i_digits_os[7] {
+            o_invalid |= s_match_4;
+        }
+
+        // Block size 3 (length 6 or 9): digits[0:2] == digits[3:5]
+        // For length 9, also need digits[3:5] == digits[6:8]
+        if i_digits_os[5] {
+            o_invalid |= s_match_3_0;
+        }
+        if i_digits_os[8] {
+            o_invalid |= s_match_3_0 && s_match_3_1;
+        }
+
+        // Block size 2 (length 4, 6, 8, 10): all pairs equal
+        if i_digits_os[3] || i_digits_os[5] || i_digits_os[7] || i_digits_os[9] {
+            o_invalid |= s_match_2;
+        }
+
+        // Block size 1 (length 2, 3, 4, 5, 6, 7, 8, 9, 10): all digits equal
+        if i_digits_os[1] || i_digits_os[2] || i_digits_os[3] || i_digits_os[4] || i_digits_os[5] || i_digits_os[6] || i_digits_os[7] || i_digits_os[8] || i_digits_os[9] {
+            o_invalid |= s_match_1;
+        }
+    }
+}
+
+#[test(test_day_02)]
+embed (inline) sv{{{
+    `timescale 1ns/1ps
+
+    module test_day_02;
+        `include "aoc_tasks.svh"
+
+        // Standard AoC signals
+        logic clk;
+        logic rst;
+        logic [7:0] i_data;
+        logic       i_valid;
+        logic [63:0] o_answer;
+        logic        o_busy;
+        logic        o_valid;
+
+        // Cycle counter
+        longint cycle_count;
+        logic counting;
+
+        aoc_Day02 dut (
+            .clk      (clk),
+            .rst      (rst),
+            .i_data   (i_data),
+            .i_valid  (i_valid),
+            .o_answer (o_answer),
+            .o_busy   (o_busy),
+            .o_valid  (o_valid)
+        );
+
+        // Clock generation (1 GHz = 1ns period)
+        initial clk = 0;
+        always #0.5 clk = ~clk;
+
+        // Cycle counter: count from first i_valid to o_valid
+        initial begin
+            cycle_count = 0;
+            counting = 0;
+        end
+        always @(posedge clk) begin
+            if (i_valid && !counting) counting <= 1;
+            if (counting && !o_valid) cycle_count <= cycle_count + 1;
+        end
+
+        // Test block: stream file, wait for result, assert answer
+        initial begin
+            aoc_init();
+            aoc_reset();
+            aoc_stream_file("day_02.txt");
+            while (!o_valid) @(posedge clk);
+            $display("[AoC] Final Answer: %0d", o_answer);
+            $display("[AoC] Cycles: %0d (%.3f ms at 1 GHz)", cycle_count, cycle_count / 1000000.0);
+            assert (o_answer == 64'd4174379265) else $error("Answer mismatch: expected %0d, got %0d", 64'd4174379265, o_answer);
+            $finish;
+        end
+
+        // Timeout block: fail after 1 second
+        initial begin
+            #1000000000;
+            $error("Timeout: test did not complete within 1 second");
+            $finish;
+        end
+    endmodule
+}}}

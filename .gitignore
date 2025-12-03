@@ -7,3 +7,5 @@
 
 # Verilator
 obj_dir/
+
+/data/input/*.txt
