@@ -12,6 +12,7 @@ include_files = [
     "data/examples/day_01.txt",
     "data/examples/day_02.txt",
     "data/examples/day_03.txt",
+    "data/examples/day_04.txt",
     "src/test/aoc_tasks.svh",
 ]
 

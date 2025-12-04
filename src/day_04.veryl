@@ -1,0 +1,344 @@
+/// Strategy: Store entire grid in registers (padded with zeros).
+/// Each iteration, compute neighbour counts for all cells in parallel,
+/// identify removable cells (rolls with < 4 neighbors), remove them all
+/// simultaneously, and accumulate the count. Repeat until no removals.
+pub module Day04 for ProtoAocSolution (
+    clk: input clock,
+    rst: input reset,
+
+    i_data : input logic<8>,
+    i_valid: input logic   ,
+
+    o_answer: output logic<64>,
+    o_busy  : output logic    ,
+    o_valid : output logic    ,
+) {
+    // Configuration: Padded grid size (actual + 2 for border)
+    // Example: 10x10 -> 12, Real input: 138x138 -> 140
+    const GRID_SIZE: u32 = 12;
+
+    // Index width: number of bits needed to address GRID_SIZE elements
+    // $clog2(12) = 4, $clog2(140) = 8
+    const INDEX_WIDTH: u32 = $clog2(GRID_SIZE);
+
+    // Grid storage: array of row vectors (row, col)
+    var grid: logic<GRID_SIZE> [GRID_SIZE];
+
+    // Decoder outputs
+    var decoder_done: logic             ;
+    var decoder_row : logic<INDEX_WIDTH>;
+    var decoder_col : logic<INDEX_WIDTH>;
+    var decoder_bit : logic             ;
+    var decoder_we  : logic             ;
+
+    // Solver signals
+    var solver_busy : logic                       ;
+    var solver_valid: logic                       ;
+    var solver_grid : logic<GRID_SIZE> [GRID_SIZE];
+
+    inst decoder: Day04Decoder #(
+        INDEX_WIDTH: INDEX_WIDTH,
+    ) (
+        clk                  ,
+        rst                  ,
+        i_data               ,
+        i_valid              ,
+        o_done : decoder_done,
+        o_row  : decoder_row ,
+        o_col  : decoder_col ,
+        o_bit  : decoder_bit ,
+        o_we   : decoder_we  ,
+    );
+
+    inst solver: Day04Solver #(
+        GRID_SIZE: GRID_SIZE,
+    ) (
+        clk                   ,
+        rst                   ,
+        i_start : decoder_done,
+        i_grid  : grid        ,
+        o_grid  : solver_grid ,
+        o_answer              ,
+        o_busy  : solver_busy ,
+        o_valid : solver_valid,
+    );
+
+    // Grid update logic (no reset needed)
+    always_ff {
+        if !decoder_done && decoder_we {
+            // During load: set bit at [row][col]
+            grid[decoder_row][decoder_col] = decoder_bit;
+        } else if solver_busy {
+            // During solve: update from solver
+            grid = solver_grid;
+        }
+    }
+
+    assign o_busy  = 0; // Decoder is combinational, does not block
+    assign o_valid = solver_valid;
+}
+
+/// Decoder: Parse input stream into grid coordinates
+/// Outputs write enable, row, col, and bit value for each '@' or '.' character
+module Day04Decoder #(
+    param INDEX_WIDTH: u32 = 8,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_data : input logic<8>,
+    i_valid: input logic   ,
+
+    o_done: output logic             , // Finished loading
+    o_row : output logic<INDEX_WIDTH>, // Current row (1-indexed for padding)
+    o_col : output logic<INDEX_WIDTH>, // Current col (1-indexed for padding)
+    o_bit : output logic             , // Bit to write (1 for @, 0 for .)
+    o_we  : output logic             , // Write enable
+) {
+    var row       : logic<INDEX_WIDTH>;
+    var col       : logic<INDEX_WIDTH>;
+    var done      : logic             ;
+    var prev_valid: logic             ; // To detect falling edge of i_valid
+
+    var is_roll   : logic;
+    var is_empty  : logic;
+    var is_newline: logic;
+
+    always_comb {
+        is_roll    = i_data == 8'h40; // '@'
+        is_empty   = i_data == 8'h2E; // '.'
+        is_newline = i_data == 8'h0A; // '\n'
+    }
+
+    always_ff {
+        if_reset {
+            row        = 1; // Row and col start at 1 (padded border)
+            col        = 1;
+            done       = 0;
+            prev_valid = 0;
+        } else {
+            prev_valid = i_valid;
+
+            // Detect end of input: i_valid was high, now low, and we've read at least one row
+            if prev_valid && !i_valid && row >: 1 {
+                done = 1;
+            } else if i_valid && !done {
+                if is_newline {
+                    row = row + 1;
+                    col = 1;
+                } else if is_roll || is_empty {
+                    col = col + 1;
+                }
+            }
+        }
+    }
+
+    always_comb {
+        o_done = done;
+        o_row  = row;
+        o_col  = col;
+        o_bit  = is_roll;
+        o_we   = i_valid && !done && (is_roll || is_empty);
+    }
+}
+
+/// Solver: Iteratively remove rolls with < 4 neighbors
+/// Uses parallel neighbour computation, but registered popcount for synthesis efficiency
+module Day04Solver #(
+    param GRID_SIZE: u32 = 12,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_start: input logic                       ,
+    i_grid : input logic<GRID_SIZE> [GRID_SIZE],
+
+    o_grid  : output logic<GRID_SIZE> [GRID_SIZE],
+    o_answer: output logic<64>                   ,
+    o_busy  : output logic                       ,
+    o_valid : output logic                       ,
+) {
+    enum State: logic<3> {
+        Idle,
+        Compute, // Compute removable mask
+        Count, // Count removals (registered)
+        Apply, // Apply grid update
+        Done,
+    }
+
+    var state  : State    ;
+    var answer : logic<64>;
+    var started: logic    ;
+
+    // Removable mask: cell is a roll AND has < 4 neighbors
+    var removable: logic<GRID_SIZE> [GRID_SIZE];
+
+    // Registered removal count
+    var removal_count: logic<16>;
+
+    // Next grid state after removal
+    var next_grid: logic<GRID_SIZE> [GRID_SIZE];
+
+    // Any removable flag (large OR reduction)
+    var any_removable: logic;
+
+    // Compute removable mask and next_grid (combinational)
+    always_comb {
+        any_removable = 0;
+
+        for row: u32 in 0..GRID_SIZE {
+            for col: u32 in 0..GRID_SIZE {
+                removable[row][col] = 0;
+                next_grid[row][col] = i_grid[row][col];
+            }
+        }
+
+        // Only interior cells can be removed (inside the padding)
+        for row: u32 in 1..GRID_SIZE - 1 {
+            for col: u32 in 1..GRID_SIZE - 1 {
+
+                var count: logic<4>;
+
+                count = {3'b0, i_grid[row - 1][col - 1]} + {3'b0, i_grid[row - 1][col]} + {3'b0, i_grid[row - 1][col + 1]} + {3'b0, i_grid[row][col - 1]} + {3'b0, i_grid[row][col + 1]} + {3'b0, i_grid[row + 1][col - 1]} + {3'b0, i_grid[row + 1][col]} + {3'b0, i_grid[row + 1][col + 1]};
+
+                if i_grid[row][col] && (count <: 4) {
+                    removable[row][col] = 1;
+                    next_grid[row][col] = 0;
+                    any_removable       = 1;
+                }
+            }
+        }
+    }
+
+    always_ff {
+        if_reset {
+            state         = State::Idle;
+            answer        = 0;
+            started       = 0;
+            removal_count = 0;
+        } else {
+            case state {
+                State::Idle: {
+                    if i_start && !started {
+                        state         = State::Compute;
+                        answer        = 0;
+                        started       = 1;
+                        removal_count = 0;
+                    }
+                }
+
+                State::Compute: {
+                    removal_count = 0;
+                    state         = State::Count;
+                }
+
+                // Accumulate the number of removals over one cycle
+                // to prevent creating a huge adder tree
+                State::Count: {
+                    var count_accum: logic<16>;
+
+                    count_accum = 0;
+
+                    for row: u32 in 1..GRID_SIZE - 1 {
+                        for col: u32 in 1..GRID_SIZE - 1 {
+                            count_accum = count_accum + {15'b0, removable[row][col]};
+                        }
+                    }
+
+                    removal_count = count_accum;
+                    state         = State::Apply;
+                }
+
+                State::Apply: {
+                    if removal_count == 0 {
+                        state = State::Done;
+                    } else {
+                        answer += {48'b0, removal_count};
+                        state  =  State::Compute;
+                    }
+                }
+
+                default: {}
+            }
+        }
+    }
+
+    always_comb {
+        if state == State::Apply && removal_count != 0 {
+            o_grid = next_grid;
+        } else {
+            o_grid = i_grid;
+        }
+    }
+
+    always_comb {
+        o_answer = answer;
+        o_busy   = state != State::Idle && state != State::Done;
+        o_valid  = state == State::Done;
+    }
+}
+
+#[test(test_day_04)]
+embed (inline) sv{{{
+    `timescale 1ns/1ps
+
+    module test_day_04;
+        `include "aoc_tasks.svh"
+
+        // Standard AoC signals
+        logic clk;
+        logic rst;
+        logic [7:0] i_data;
+        logic       i_valid;
+        logic [63:0] o_answer;
+        logic        o_busy;
+        logic        o_valid;
+
+        // Cycle counter
+        longint cycle_count;
+        logic counting;
+
+        aoc_Day04 dut (
+            .clk      (clk),
+            .rst      (rst),
+            .i_data   (i_data),
+            .i_valid  (i_valid),
+            .o_answer (o_answer),
+            .o_busy   (o_busy),
+            .o_valid  (o_valid)
+        );
+
+        // Clock generation (1 GHz = 1ns period)
+        initial clk = 0;
+        always #0.5 clk = ~clk;
+
+        // Cycle counter: count from first i_valid to o_valid
+        initial begin
+            cycle_count = 0;
+            counting = 0;
+        end
+        always @(posedge clk) begin
+            if (i_valid && !counting) counting <= 1;
+            if (counting && !o_valid) cycle_count <= cycle_count + 1;
+        end
+
+        // Test block: stream file, wait for result, assert answer
+        initial begin
+            aoc_init();
+            aoc_reset();
+            aoc_stream_file("day_04.txt");
+            while (!o_valid) @(posedge clk);
+            $display("[AoC] Final Answer: %0d", o_answer);
+            $display("[AoC] Cycles: %0d (%.3f ms at 1 GHz)", cycle_count, cycle_count / 1000000.0);
+            assert (o_answer == 64'd43) else $error("Answer mismatch: expected %0d, got %0d", 64'd43, o_answer);
+            $finish;
+        end
+
+        // Timeout block: fail after 1 second
+        initial begin
+            #1000000000;
+            $error("Timeout: test did not complete within 1 second");
+            $finish;
+        end
+    endmodule
+}}}
