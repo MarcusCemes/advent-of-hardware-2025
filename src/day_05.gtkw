@@ -1,0 +1,50 @@
+[*]
+[*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
+[*] Fri Dec  5 11:37:36 2025
+[*]
+[dumpfile] "/home/marcus/dev/experimental/advent-of-code-2025/src/test_day_05.vcd"
+[dumpfile_mtime] "Fri Dec  5 11:37:24 2025"
+[dumpfile_size] 16201
+[savefile] "/home/marcus/dev/experimental/advent-of-code-2025/src/day_05.gtkw"
+[timestart] 0
+[size] 1728 973
+[pos] -1 -1
+*-13.606081 41520 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] TOP.
+[treeopen] TOP.test_day_05.
+[treeopen] TOP.test_day_05.dut.
+[sst_width] 297
+[signals_width] 192
+[sst_expanded] 1
+[sst_vpaned_height] 287
+@28
+TOP.test_day_05.clk
+TOP.test_day_05.rst
+@200
+-
+@820
+TOP.test_day_05.dut.decoder.i_data[7:0]
+@28
+TOP.test_day_05.dut.decoder.i_busy
+TOP.test_day_05.dut.decoder.o_busy
+TOP.test_day_05.dut.decoder.o_range_valid
+TOP.test_day_05.dut.decoder.o_done
+@200
+-
+@25
+TOP.test_day_05.dut.solver.i_start[63:0]
+TOP.test_day_05.dut.solver.i_end[63:0]
+TOP.test_day_05.dut.solver.state[2:0]
+@29
+TOP.test_day_05.dut.solver.has_overlap
+@28
+TOP.test_day_05.dut.solver.has_empty
+TOP.test_day_05.dut.solver.has_occupied
+@22
+TOP.test_day_05.dut.solver.occupied[127:0]
+TOP.test_day_05.dut.solver.count_mask[127:0]
+TOP.test_day_05.dut.solver.overlap_mask[127:0]
+@24
+TOP.test_day_05.dut.solver.answer[63:0]
+[pattern_trace] 1
+[pattern_trace] 0
