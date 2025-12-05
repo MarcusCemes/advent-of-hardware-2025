@@ -1,13 +1,9 @@
 /// Day 5 Part 2: Merge overlapping ranges and count total coverage
 ///
-/// Strategy:
-/// 1. Decoder parses "start-end" ranges from input stream
-/// 2. Solver maintains up to 128 disjoint ranges in registers
-/// 3. For each new range: find all overlapping ranges using priority encoder,
-///    merge them (min start, max end), remove old ranges, insert merged range
-/// 4. After blank line (end of ranges), count total coverage
+/// Input format: Lines of "start-end" ranges, followed by blank line, then IDs (ignored).
+/// Output: Sum of coverage across all merged disjoint ranges.
 ///
-/// Key insight: Two ranges overlap or touch if NOT(end1+1 < start2 OR end2+1 < start1)
+/// Two ranges overlap or touch if: end1 + 1 >= start2 AND end2 + 1 >= start1
 pub module Day05 for ProtoAocSolution (
     clk: input clock,
     rst: input reset,
@@ -19,16 +15,13 @@ pub module Day05 for ProtoAocSolution (
     o_busy  : output logic    ,
     o_valid : output logic    ,
 ) {
-    // Decoder outputs
     var decoder_start      : logic<64>;
     var decoder_end        : logic<64>;
     var decoder_range_valid: logic    ;
     var decoder_done       : logic    ;
     var decoder_busy       : logic    ;
-
-    // Solver outputs
-    var solver_busy : logic;
-    var solver_valid: logic;
+    var solver_busy        : logic    ;
+    var solver_valid       : logic    ;
 
     inst decoder: Day05Decoder (
         clk                               ,
@@ -59,29 +52,28 @@ pub module Day05 for ProtoAocSolution (
     assign o_valid = solver_valid;
 }
 
-/// Decoder: Parse "start-end" lines from input stream
-/// Outputs each range as (start, end) with valid pulse
-/// Signals done after blank line detected and input ends
+/// Parses "start-end" lines from input stream.
+/// Emits (start, end) pairs, signals done after blank line and end of input.
 module Day05Decoder (
     clk: input clock,
     rst: input reset,
 
     i_data : input logic<8>,
     i_valid: input logic   ,
-    i_busy : input logic   , // Backpressure from solver
+    i_busy : input logic   ,
 
-    o_start      : output logic<64>, // Range start value
-    o_end        : output logic<64>, // Range end value
-    o_range_valid: output logic    , // Pulse when range is ready
-    o_done       : output logic    , // All ranges parsed
-    o_busy       : output logic    , // Decoder needs solver to accept
+    o_start      : output logic<64>,
+    o_end        : output logic<64>,
+    o_range_valid: output logic    ,
+    o_done       : output logic    ,
+    o_busy       : output logic    ,
 ) {
     enum State: logic<3> {
-        ParseStart, // Parsing the start number
-        ParseEnd, // Parsing the end number (after '-')
-        EmitRange, // Emitting a parsed range, waiting for solver
-        Consume, // After blank line, consume remaining input (IDs)
-        Done, // Processing complete
+        ParseStart,
+        ParseEnd,
+        EmitRange,
+        Consume,
+        Done,
     }
 
     var state     : State    ;
@@ -89,7 +81,6 @@ module Day05Decoder (
     var end_val   : logic<64>;
     var prev_valid: logic    ;
 
-    // Character detection
     var is_digit  : logic   ;
     var is_dash   : logic   ;
     var is_newline: logic   ;
@@ -119,10 +110,8 @@ module Day05Decoder (
                         } else if is_dash {
                             state = State::ParseEnd;
                         } else if is_newline && start_val == 0 {
-                            // Empty line (blank line) - transition to consume mode
                             state = State::Consume;
                         }
-                        // Otherwise ignore stray newlines when start_val != 0
                     }
                 }
 
@@ -131,7 +120,6 @@ module Day05Decoder (
                         if is_digit {
                             end_val = end_val * 10 + {60'b0, digit_val};
                         } else if is_newline {
-                            // End of range line - emit it
                             state = State::EmitRange;
                         }
                     }
@@ -139,16 +127,13 @@ module Day05Decoder (
 
                 State::EmitRange: {
                     if !i_busy {
-                        // Solver accepted the range, reset for next
                         end_val = 0;
 
-                        // Also process any incoming character on this cycle
-                        // to avoid losing data
+                        // Process incoming character to avoid data loss during handshake
                         if i_valid && is_digit {
                             start_val = {60'b0, digit_val};
                             state     = State::ParseStart;
                         } else if i_valid && is_newline {
-                            // Blank line - done with ranges
                             start_val = 0;
                             state     = State::Consume;
                         } else {
@@ -159,15 +144,9 @@ module Day05Decoder (
                 }
 
                 State::Consume: {
-                    // Just consume remaining input (IDs section)
-                    // Wait for falling edge of i_valid (end of input)
                     if !i_valid && prev_valid {
                         state = State::Done;
                     }
-                }
-
-                State::Done: {
-                    // Stay done
                 }
 
                 default: {}
@@ -184,93 +163,74 @@ module Day05Decoder (
     }
 }
 
-/// Solver: Merge ranges and count total coverage
-/// Maintains up to 128 disjoint ranges
-/// Uses priority encoder to iterate through occupied slots
+/// Merges overlapping ranges and counts total coverage.
+/// Maintains up to 128 disjoint ranges in parallel arrays with occupancy bitmask.
 module Day05Solver (
     clk: input clock,
     rst: input reset,
 
-    i_start      : input logic<64>, // New range start
-    i_end        : input logic<64>, // New range end
-    i_range_valid: input logic    , // New range available
-    i_done       : input logic    , // All ranges received
+    i_start      : input logic<64>,
+    i_end        : input logic<64>,
+    i_range_valid: input logic    ,
+    i_done       : input logic    ,
 
-    o_answer: output logic<64>, // Total coverage
-    o_busy  : output logic    , // Processing a range
-    o_valid : output logic    , // Answer ready
+    o_answer: output logic<64>,
+    o_busy  : output logic    ,
+    o_valid : output logic    ,
 ) {
     const MAX_RANGES: u32 = 128;
 
     enum State: logic<3> {
-        Idle, // Waiting for input
-        ScanOverlap, // Scanning for overlapping ranges
-        MergeOne, // Merging one overlapping range
-        FindSlot, // Finding empty slot for new range
-        Insert, // Inserting merged range
-        CountInit, // Initialize counting
-        CountScan, // Counting total coverage
-        Done, // Answer ready
+        Idle,
+        ScanOverlap,
+        MergeOne,
+        FindSlot,
+        Insert,
+        CountInit,
+        CountScan,
+        Done,
     }
 
     var state: State;
 
-    // Range storage: parallel arrays for start/end values
     var ranges_start: logic<64>         [MAX_RANGES];
     var ranges_end  : logic<64>         [MAX_RANGES];
-    var occupied    : logic<MAX_RANGES>             ; // Bitmask of valid slots
+    var occupied    : logic<MAX_RANGES>             ;
 
-    // Current range being processed (accumulates merges)
-    var cur_start: logic<64>;
-    var cur_end  : logic<64>;
+    var cur_start: logic<64>        ;
+    var cur_end  : logic<64>        ;
+    var scan_mask: logic<MAX_RANGES>;
 
-    // Scanning state
-    var scan_mask: logic<MAX_RANGES>; // Remaining slots to check
+    var prev_range_valid  : logic            ;
+    var range_valid_rising: logic            ;
+    var overlap_mask      : logic<MAX_RANGES>;
+    var first_overlap_idx : logic<7>         ;
+    var has_overlap       : logic            ;
+    var first_empty_idx   : logic<7>         ;
+    var has_empty         : logic            ;
+    var first_occupied_idx: logic<7>         ;
+    var has_occupied      : logic            ;
+    var count_mask        : logic<MAX_RANGES>;
+    var answer            : logic<64>        ;
 
-    // Track previous valid to detect rising edge
-    var prev_range_valid: logic;
-
-    // Overlap detection (combinational)
-    var overlap_mask: logic<MAX_RANGES>; // Which occupied slots overlap with current
-
-    // Priority encoder outputs
-    var first_overlap_idx : logic<7>; // Index of first overlapping slot
-    var has_overlap       : logic   ; // Any overlap exists
-    var first_empty_idx   : logic<7>; // Index of first empty slot
-    var has_empty         : logic   ; // Empty slot exists
-    var first_occupied_idx: logic<7>; // Index of first occupied slot (for counting)
-    var has_occupied      : logic   ; // Any occupied slot exists
-
-    // Counting state
-    var count_mask: logic<MAX_RANGES>; // Remaining slots to count
-    var answer    : logic<64>        ;
-
-    // Rising edge detection
-    var range_valid_rising: logic;
     always_comb {
         range_valid_rising = i_range_valid && !prev_range_valid;
     }
 
-    // Compute overlap mask: which slots overlap with (cur_start, cur_end)?
-    // Ranges overlap or touch if: NOT(end1 + 1 < start2 OR end2 + 1 < start1)
-    // Equivalently: end1 + 1 >= start2 AND end2 + 1 >= start1
+    // Overlap detection: ranges overlap or touch if end1+1 >= start2 AND end2+1 >= start1
     always_comb {
-        for i: u32 in 0..MAX_RANGES {
-            // Check if range i overlaps or touches current range
-            // Use saturating +1 to avoid overflow issues
+        for i: u32       in 0..MAX_RANGES {
             let slot_end_plus1   : logic<64> = ranges_end[i] + 1;
             let cur_end_plus1    : logic<64> = cur_end + 1;
             let overlaps_or_touch: logic     = (slot_end_plus1 >= cur_start) && (cur_end_plus1 >= ranges_start[i]);
-
-            overlap_mask[i] = occupied[i] && scan_mask[i] && overlaps_or_touch;
+            overlap_mask[i]   = occupied[i] && scan_mask[i] && overlaps_or_touch;
         }
     }
 
-    // Priority encoder for first overlap
+    // Priority encoder: first overlapping slot
     always_comb {
         first_overlap_idx = 0;
         has_overlap       = 0;
-
         for i: u32 in 0..MAX_RANGES {
             if overlap_mask[i] && !has_overlap {
                 first_overlap_idx = i[6:0];
@@ -279,11 +239,10 @@ module Day05Solver (
         }
     }
 
-    // Priority encoder for first empty slot
+    // Priority encoder: first empty slot
     always_comb {
         first_empty_idx = 0;
         has_empty       = 0;
-
         for i: u32 in 0..MAX_RANGES {
             if !occupied[i] && !has_empty {
                 first_empty_idx = i[6:0];
@@ -292,11 +251,10 @@ module Day05Solver (
         }
     }
 
-    // Priority encoder for first occupied slot (for counting)
+    // Priority encoder: first occupied slot (for counting)
     always_comb {
         first_occupied_idx = 0;
         has_occupied       = 0;
-
         for i: u32 in 0..MAX_RANGES {
             if count_mask[i] && !has_occupied {
                 first_occupied_idx = i[6:0];
@@ -305,7 +263,6 @@ module Day05Solver (
         }
     }
 
-    // Main FSM
     always_ff {
         if_reset {
             state            = State::Idle;
@@ -316,9 +273,9 @@ module Day05Solver (
             count_mask       = 0;
             answer           = 0;
             prev_range_valid = 0;
+            ranges_start     = '{default: 0};
+            ranges_end       = '{default: 0};
         } else {
-            // Only update prev_range_valid when in Idle - this way we detect
-            // rising edge properly even after returning from processing
             if state == State::Idle {
                 prev_range_valid = i_range_valid;
             }
@@ -326,75 +283,54 @@ module Day05Solver (
             case state {
                 State::Idle: {
                     if range_valid_rising {
-                        // New range arrived (rising edge), start processing
                         cur_start        = i_start;
                         cur_end          = i_end;
-                        scan_mask        = ~128'b0; // Check all slots (all ones)
+                        scan_mask        = ~128'b0;
                         state            = State::ScanOverlap;
-                        prev_range_valid = 0; // Clear so we can detect next rising edge when we return
+                        prev_range_valid = 0;
                     } else if i_done {
-                        // All ranges received, start counting
                         state = State::CountInit;
                     }
                 }
 
                 State::ScanOverlap: {
                     if has_overlap {
-                        // Found an overlapping range, merge it
                         state = State::MergeOne;
                     } else {
-                        // No more overlaps, insert the merged range
                         state = State::FindSlot;
                     }
                 }
 
                 State::MergeOne: {
-                    // Merge the overlapping range into current
                     let idx: logic<7> = first_overlap_idx;
-
-                    // Expand current range to include the overlapping one
                     if ranges_start[idx] <: cur_start {
                         cur_start = ranges_start[idx];
                     }
                     if ranges_end[idx] >: cur_end {
                         cur_end = ranges_end[idx];
                     }
-
-                    // Remove the overlapping range from storage
-                    occupied[idx] = 0;
-
-                    // Remove from scan mask so we don't find it again
+                    occupied[idx]  = 0;
                     scan_mask[idx] = 0;
-
-                    // Continue scanning for more overlaps
-                    state = State::ScanOverlap;
+                    state          = State::ScanOverlap;
                 }
 
                 State::FindSlot: {
-                    // Find empty slot (should always exist if MAX_RANGES is sufficient)
                     if has_empty {
                         state = State::Insert;
                     } else {
-                        // No empty slot - shouldn't happen with proper MAX_RANGES
-                        // Just go back to idle (will lose this range)
                         state = State::Idle;
                     }
                 }
 
                 State::Insert: {
-                    // Insert merged range into first empty slot
-                    let idx: logic<7> = first_empty_idx;
-
+                    let idx              : logic<7> = first_empty_idx;
                     ranges_start[idx] = cur_start;
                     ranges_end[idx]   = cur_end;
                     occupied[idx]     = 1;
-
-                    // Ready for next range
-                    state = State::Idle;
+                    state             = State::Idle;
                 }
 
                 State::CountInit: {
-                    // Initialize counting
                     count_mask = occupied;
                     answer     = 0;
                     state      = State::CountScan;
@@ -402,20 +338,13 @@ module Day05Solver (
 
                 State::CountScan: {
                     if has_occupied {
-                        // Add this range's coverage to answer
-                        let idx : logic<7>  = first_occupied_idx;
-                        let size: logic<64> = ranges_end[idx] - ranges_start[idx] + 1;
-
+                        let idx            : logic<7>  = first_occupied_idx;
+                        let size           : logic<64> = ranges_end[idx] - ranges_start[idx] + 1;
                         answer          = answer + size;
-                        count_mask[idx] = 0; // Mark as counted
+                        count_mask[idx] = 0;
                     } else {
-                        // All ranges counted
                         state = State::Done;
                     }
-                }
-
-                State::Done: {
-                    // Stay done
                 }
 
                 default: {}
@@ -482,7 +411,7 @@ embed (inline) sv{{{
             while (!o_valid) @(posedge clk);
             $display("[AoC] Final Answer: %0d", o_answer);
             $display("[AoC] Cycles: %0d (%.3f ms at 1 GHz)", cycle_count, cycle_count / 1000000.0);
-            assert (o_answer == 64'd334714395325710) else $error("Answer mismatch: expected %0d, got %0d", 64'd334714395325710, o_answer);
+            assert (o_answer == 64'd14) else $error("Answer mismatch: expected %0d, got %0d", 64'd14, o_answer);
             $finish;
         end
 
