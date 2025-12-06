@@ -1,0 +1,52 @@
+[*]
+[*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
+[*] Sat Dec  6 12:28:54 2025
+[*]
+[dumpfile] "/home/marcus/dev/working/advent-of-hardware-2025/src/test_day_06.vcd"
+[dumpfile_mtime] "Sat Dec  6 12:23:09 2025"
+[dumpfile_size] 3851321
+[savefile] "/home/marcus/dev/working/advent-of-hardware-2025/src/day_06.gtkw"
+[timestart] 0
+[size] 1728 973
+[pos] -27 -24
+*-14.557174 22254300 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] TOP.
+[treeopen] TOP.test_day_06.
+[treeopen] TOP.test_day_06.dut.
+[sst_width] 297
+[signals_width] 244
+[sst_expanded] 1
+[sst_vpaned_height] 287
+@28
+TOP.test_day_06.clk
+TOP.test_day_06.rst
+@200
+-
+@820
+TOP.test_day_06.dut.decoder.i_data[7:0]
+@24
+TOP.test_day_06.dut.decoder.cur_row[2:0]
+@28
+TOP.test_day_06.dut.decoder.is_digit
+TOP.test_day_06.dut.decoder.is_mult
+TOP.test_day_06.dut.decoder.is_plus
+TOP.test_day_06.dut.decoder.is_newline
+@24
+TOP.test_day_06.dut.decoder.o_row[1:0]
+@22
+TOP.test_day_06.dut.decoder.o_value[3:0]
+@28
+TOP.test_day_06.dut.decoder.o_busy
+@200
+-
+@28
+TOP.test_day_06.dut.solver.col_has_digit
+TOP.test_day_06.dut.solver.col_all_whitespace
+TOP.test_day_06.dut.solver.current_op
+TOP.test_day_06.dut.solver.processing
+@22
+TOP.test_day_06.dut.solver.o_answer[63:0]
+@28
+TOP.test_day_06.dut.solver.o_busy
+[pattern_trace] 1
+[pattern_trace] 0
