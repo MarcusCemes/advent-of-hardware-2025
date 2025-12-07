@@ -133,54 +133,111 @@ module Day01Solver (
     o_busy  : output logic    ,
     o_valid : output logic    ,
 ) {
+    const START_POSITION: logic<7> = 50;
+
     var answer: logic<64>;
-    var count : logic<32>;
-    var right : logic    ;
-    var state : logic<32>;
+    var state : logic<7> ; // 0-99 fits in 7 bits
+
+    // Combinational: closed-form solution
+    var dist_to_zero : logic<7> ; // Distance to next zero (1-100)
+    var clicks       : logic<4> ; // Clicks for this command (0-10)
+    var new_state    : logic<7> ; // State after this command
+    var raw_new_state: logic<11>; // State +/- count before modulo (0-1099)
+    var quotient     : logic<4> ; // floor(raw_new_state / 100)
+    var clicks_diff  : logic<11>; // For clicks calculation
+
+    always_comb {
+        // Distance to next zero in direction of travel
+        if state == 0 {
+            dist_to_zero = 7'd100; // At zero: next zero is a full lap away
+        } else if i_right {
+            dist_to_zero = 7'd100 - state; // Going right: wrap through 99->0
+        } else {
+            dist_to_zero = state; // Going left: direct path to 0
+        }
+
+        if i_right {
+            raw_new_state = {4'b0, state} + i_count[10:0];
+        } else {
+            // Add 1000 to avoid negative values
+            raw_new_state = {4'b0, state} + 11'd1000 - i_count[10:0];
+        }
+
+        // Integer division by 100 to get quotient q
+        if raw_new_state >= 11'd1000 {
+            quotient = 4'd10;
+        } else if raw_new_state >= 11'd900 {
+            quotient = 4'd9;
+        } else if raw_new_state >= 11'd800 {
+            quotient = 4'd8;
+        } else if raw_new_state >= 11'd700 {
+            quotient = 4'd7;
+        } else if raw_new_state >= 11'd600 {
+            quotient = 4'd6;
+        } else if raw_new_state >= 11'd500 {
+            quotient = 4'd5;
+        } else if raw_new_state >= 11'd400 {
+            quotient = 4'd4;
+        } else if raw_new_state >= 11'd300 {
+            quotient = 4'd3;
+        } else if raw_new_state >= 11'd200 {
+            quotient = 4'd2;
+        } else if raw_new_state >= 11'd100 {
+            quotient = 4'd1;
+        } else {
+            quotient = 4'd0;
+        }
+
+
+        // new_state = raw_new_state mod 100 = raw_new_state - 100q
+        // 100q = (64 + 32 + 4) * q = (q << 6) + (q << 5) + (q << 2)
+        var q_times_100: logic<11>;
+
+        q_times_100 = {quotient, 6'b0} + {1'b0, quotient, 5'b0} + {4'b0, quotient, 2'b0};
+        new_state   = raw_new_state[6:0] - q_times_100[6:0];
+
+        // The number of clicks at/through zero is given by:
+        // 1 + floor((count - dist_to_zero) / 100) if count >= dist_to_zero, else 0
+        clicks_diff = {1'b0, i_count[9:0]} - {4'b0, dist_to_zero};
+
+        if i_count[9:0] <: {3'b0, dist_to_zero} {
+            clicks = 0;
+        } else if clicks_diff >= 11'd900 {
+            clicks = 4'd10;
+        } else if clicks_diff >= 11'd800 {
+            clicks = 4'd9;
+        } else if clicks_diff >= 11'd700 {
+            clicks = 4'd8;
+        } else if clicks_diff >= 11'd600 {
+            clicks = 4'd7;
+        } else if clicks_diff >= 11'd500 {
+            clicks = 4'd6;
+        } else if clicks_diff >= 11'd400 {
+            clicks = 4'd5;
+        } else if clicks_diff >= 11'd300 {
+            clicks = 4'd4;
+        } else if clicks_diff >= 11'd200 {
+            clicks = 4'd3;
+        } else if clicks_diff >= 11'd100 {
+            clicks = 4'd2;
+        } else {
+            clicks = 4'd1;
+        }
+    }
 
     always_ff {
         if_reset {
             answer = 0;
-            count  = 0;
-            right  = 0;
-            state  = 50;
-        } else {
-            // Priority 1: If we are busy processing (count > 0)
-            if count != 0 {
-                count = count - 1;
-
-                if right {
-                    // Logic for "Right"
-                    if state == 99 {
-                        answer += 1;
-                        state  =  0;
-                    } else {
-                        state = state + 1;
-                    }
-                } else {
-                    // Logic for "Left" (Not Right)
-                    if state == 1 {
-                        answer += 1;
-                    }
-
-                    if state == 0 {
-                        state = 99;
-                    } else {
-                        state = state - 1;
-                    }
-                }
-
-                // Priority 2: Load new data if valid
-            } else if i_valid {
-                count = i_count;
-                right = i_right;
-            }
+            state  = START_POSITION;
+        } else if i_valid {
+            answer = answer + {60'b0, clicks};
+            state  = new_state;
         }
     }
 
     assign o_answer = answer;
-    assign o_busy   = count != 0;
-    assign o_valid  = !o_busy;
+    assign o_busy   = 0; // Single-cycle, never busy
+    assign o_valid  = 1; // Always valid
 }
 
 #[test(test_day_01)]

@@ -1,6 +1,6 @@
-/// Architecture: Decoder → Solver with shift register bank
+/// Architecture: Decoder → Solver with register array
 /// - Decoder: parses input, emits digits (for shift regs) or operators (for solver)
-/// - Solver: buffers digits in shift registers, processes on operator receipt
+/// - Solver: buffers digits in indexed registers, processes on operator receipt
 pub module Day06 #(
     param N_ROWS    : u32 = 3 ,
     param LINE_WIDTH: u32 = 16,
