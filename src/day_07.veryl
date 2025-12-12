@@ -1,95 +1,181 @@
-/// Algorithm:
-/// - First line: find 'S' and set beams[cursor] = 1
-/// - Subsequent lines: on '^' with beams[cursor] > 0:
-///     beams[cursor-1] += timelines, beams[cursor] = 0, beams[cursor+1] += timelines
-/// - Output: combinatorial sum of all beams
-///
-/// Hardware: 141 parallel 64-bit registers, single-cycle updates per byte
 pub module Day07 #(
+    param BYTES     : u32 = 32 ,
     param LINE_WIDTH: u32 = 141,
 ) (
     clk: input clock,
     rst: input reset,
 
-    i_data : input logic<8>,
-    i_valid: input logic   ,
-
-    o_answer: output logic<64>,
-    o_busy  : output logic    ,
-    o_valid : output logic    ,
+    i_data     : input  logic<BYTES, 8>,
+    i_available: input  logic<IDX_BITS>,
+    o_consumed : output logic<IDX_BITS>,
+    o_finished : output logic          ,
+    o_answer   : output logic<64>      ,
 ) {
     const CURSOR_BITS: u32 = $clog2(LINE_WIDTH);
+    const IDX_BITS   : u32 = $clog2(BYTES + 1);
 
-    // Beam registers - each holds timeline count for that column
-    var beams: logic<64> [LINE_WIDTH];
-
-    // State
-    var cursor    : logic<CURSOR_BITS>;
-    var in_init   : logic             ; // true = first line (looking for 'S')
-    var done      : logic             ;
-    var prev_valid: logic             ;
-
-    // Character classification
-    let is_start   : logic = i_data == 8'h53; // 'S'
-    let is_splitter: logic = i_data == 8'h5E; // '^'
-    let is_newline : logic = i_data == 8'h0A; // '\n'
-
-    // Combinatorial sum of all beams
-    var beam_sum: logic<64>;
-
-    always_comb {
-        beam_sum = 0;
-
-        for i: u32 in 0..LINE_WIDTH {
-            beam_sum += beams[i];
-        }
+    enum State: logic<2> {
+        Init,
+        Collect,
+        Propagate,
+        Done,
     }
+
+    var beams     : logic<64> [LINE_WIDTH];
+    var next_beams: logic<64> [LINE_WIDTH];
+
+    var cursor: logic<CURSOR_BITS>;
+    var state : State             ;
+
+    var line     : logic<LINE_WIDTH>;
+    var next_line: logic<LINE_WIDTH>;
+
+    var s_eol_match: logic          ;
+    var s_eol_index: logic<IDX_BITS>;
+
+    var s_start_match: logic          ;
+    var s_start_index: logic<IDX_BITS>;
+
+    inst find_delimiter: FindDelimiter #(
+        BYTES    : BYTES,
+        DELIMITER: 8'h0A, // '\n'
+    ) (
+        i_data     : i_data     ,
+        i_available: i_available,
+        o_index    : s_eol_index,
+        o_match    : s_eol_match,
+    );
+
+    inst find_start: FindDelimiter #(
+        BYTES    : BYTES,
+        DELIMITER: 8'h53, // 'S'
+    ) (
+        i_data     : i_data       ,
+        i_available: i_available  ,
+        o_index    : s_start_index,
+        o_match    : s_start_match,
+    );
 
     always_ff {
         if_reset {
-            beams      = '{default: 0};
-            cursor     = 0;
-            in_init    = 1;
-            done       = 0;
-            prev_valid = 0;
+            beams  = '{default: '0};
+            cursor = '0;
+            line   = '0;
+            state  = State::Init;
+
         } else {
-            prev_valid = i_valid;
+            case state {
+                State::Init: {
+                    if s_start_match {
+                        let offset: logic<CURSOR_BITS> = s_start_index as CURSOR_BITS;
 
-            // Detect end of input
-            if prev_valid && !i_valid {
-                done = 1;
-            }
-
-            if i_valid && !done {
-                // Cursor management
-                if is_newline {
-                    cursor  = 0;
-                    in_init = 0; // First newline transitions out of init
-                } else {
-                    cursor = cursor + 1;
-                }
-
-                // Beam updates
-                if in_init {
-                    if is_start {
-                        beams[cursor] = 1;
+                        beams[cursor + offset] = 1;
                     }
-                } else {
-                    if is_splitter && beams[cursor] >: 0 {
-                        let timelines: logic<64> = beams[cursor];
 
-                        beams[cursor - 1] = beams[cursor - 1] + timelines;
-                        beams[cursor]     = 0;
-                        beams[cursor + 1] = beams[cursor + 1] + timelines;
+                    if s_eol_match {
+                        cursor = 0;
+                        state  = State::Collect;
+
+                    } else {
+                        cursor += i_available as CURSOR_BITS;
                     }
                 }
+
+                State::Collect: {
+                    line = next_line;
+
+                    if s_eol_match || i_available != BYTES as IDX_BITS {
+                        cursor = 0;
+                        state  = State::Propagate;
+
+                    } else {
+                        cursor += i_available as CURSOR_BITS;
+                    }
+                }
+
+                State::Propagate: {
+                    beams = next_beams;
+                    line  = '0;
+
+                    if i_available == 0 {
+                        state = State::Done;
+                    } else {
+                        state = State::Collect;
+                    }
+
+                }
+
+                State::Done: {}
             }
         }
     }
 
-    assign o_answer = beam_sum;
-    assign o_busy   = 0;
-    assign o_valid  = done;
+    // Compute next beams
+    always_comb {
+        next_beams = beams;
+
+        for i: u32 in 0..LINE_WIDTH {
+            if line[i] == '1 {
+                next_beams[i] = 0;
+
+                if i != 0 {
+                    next_beams[i - 1] += beams[i];
+                }
+
+                if i != LINE_WIDTH - 1 {
+                    next_beams[i + 1] += beams[i];
+                }
+            }
+        }
+
+    }
+
+    // Compute next line
+    always_comb {
+        next_line = line;
+
+        for i: u32 in 0..BYTES {
+
+            var enabled: logic;
+
+            let offset: logic<CURSOR_BITS> = i as CURSOR_BITS;
+
+            enabled = i_data[i] == 8'h5E; // '^'
+
+            if s_eol_match && i >: s_eol_index {
+                enabled = 0;
+            }
+
+            if enabled {
+                next_line[cursor + offset] = 1;
+            }
+        }
+    }
+
+    // Compute the answer
+    always_comb {
+        o_answer = '0;
+
+        if state == State::Done {
+            for j: u32 in 0..LINE_WIDTH {
+                o_answer += beams[j];
+            }
+        }
+    }
+
+    // Output signals
+    always_comb {
+        o_consumed = i_available;
+        o_finished = state == State::Done;
+
+        if s_eol_match {
+            o_consumed = s_eol_index + 1;
+        }
+
+        if state != State::Init && state != State::Collect {
+            o_consumed = 0;
+        }
+    }
 }
 
 #[test(test_day_07)]
@@ -97,57 +183,46 @@ embed (inline) sv{{{
     `timescale 1ns/1ps
 
     module test_day_07;
-        `include "aoc_tasks.svh"
+        localparam string   FILENAME = "day_07.txt";
+        localparam longint  EXPECTED = 64'd40;
+        localparam longint  TIMEOUT  = 10000;
 
-        logic clk;
-        logic rst;
-        logic [7:0] i_data;
-        logic       i_valid;
-        logic [63:0] o_answer;
-        logic        o_busy;
-        logic        o_valid;
+        localparam BYTES    = 32;
+        localparam IDX_BITS = $clog2(BYTES + 1);
 
+        logic clk, rst;
         longint cycle_count;
-        logic counting;
+
+        logic [BYTES-1:0][7:0] i_data;
+        logic [IDX_BITS-1:0] i_available;
+        logic [IDX_BITS-1:0] o_consumed;
+        logic o_finished;
+        logic [63:0] o_answer;
 
         aoc_Day07 #(
+            .BYTES(BYTES),
             .LINE_WIDTH(15)
         ) dut (
-            .clk      (clk),
-            .rst      (rst),
-            .i_data   (i_data),
-            .i_valid  (i_valid),
-            .o_answer (o_answer),
-            .o_busy   (o_busy),
-            .o_valid  (o_valid)
+            .clk(clk),
+            .rst(rst),
+            .i_data(i_data),
+            .i_available(i_available),
+            .o_consumed(o_consumed),
+            .o_finished(o_finished),
+            .o_answer(o_answer)
         );
 
-        initial clk = 0;
-        always #0.5 clk = ~clk;
-
         initial begin
-            cycle_count = 0;
-            counting = 0;
+            clk = 0;
+            forever #0.5 clk = ~clk;
         end
-        always @(posedge clk) begin
-            if (i_valid && !counting) counting <= 1;
-            if (counting && !o_valid) cycle_count <= cycle_count + 1;
-        end
+
+        `include "aoc_tasks.svh"
 
         initial begin
             aoc_init();
-            aoc_reset();
-            aoc_stream_file("day_07.txt");
-            while (!o_valid) @(posedge clk);
-            $display("[AoC] Final Answer: %0d", o_answer);
-            $display("[AoC] Cycles: %0d (%.3f ms at 1 GHz)", cycle_count, cycle_count / 1000000.0);
-            assert (o_answer == 64'd40) else $error("Answer mismatch: expected %0d, got %0d", 64'd40, o_answer);
-            $finish;
-        end
-
-        initial begin
-            #1000000000;
-            $error("Timeout: test did not complete within 1 second");
+            aoc_run_test(FILENAME, TIMEOUT, cycle_count);
+            aoc_verify(EXPECTED, cycle_count);
             $finish;
         end
     endmodule

@@ -1,14 +1,50 @@
-pub module Day02 for ProtoAocSolution (
+pub module Day02 #(
+    param BYTES: u32 = 1,
+) (
     clk: input clock,
     rst: input reset,
 
-    i_data : input logic<8>,
-    i_valid: input logic   ,
-
-    o_answer: output logic<64>,
-    o_busy  : output logic    ,
-    o_valid : output logic    ,
+    i_data     : input  logic<BYTES, 8>          ,
+    i_available: input  logic<$clog2(BYTES + 1)> ,
+    o_consumed : output logic<$clog2(BYTES + 1)> ,
+    o_finished : output logic                    ,
+    o_answer   : output logic<64>                ,
 ) {
+    // Map new interface to internal signals
+    let i_byte : logic<8> = i_data[0];
+    let i_valid: logic    = i_available != 0;
+    var o_busy : logic;
+
+    // Track if we've seen input and if it has stopped
+    var seen_input   : logic;
+    var input_stopped: logic;
+    var prev_valid   : logic;
+
+    always_ff {
+        if_reset {
+            seen_input    = 0;
+            input_stopped = 0;
+            prev_valid    = 0;
+        } else {
+            prev_valid = i_valid;
+            if i_valid {
+                seen_input = 1;
+            }
+            if seen_input && prev_valid && !i_valid {
+                input_stopped = 1;
+            }
+        }
+    }
+
+    // Output mapping
+    always_comb {
+        o_consumed = i_available;
+        if o_busy {
+            o_consumed = 0;
+        }
+        o_finished = input_stopped && solver_valid && !o_busy;
+    }
+
     // Internal signals
     var from: logic<34>;
     var to  : logic<34>;
@@ -22,7 +58,7 @@ pub module Day02 for ProtoAocSolution (
         clk                   ,
         rst                   ,
         i_busy : solver_busy  ,
-        i_data                ,
+        i_data : i_byte       ,
         i_valid               ,
         o_busy                ,
         o_from : from         ,
@@ -40,9 +76,6 @@ pub module Day02 for ProtoAocSolution (
         o_busy  : solver_busy  ,
         o_valid : solver_valid ,
     );
-
-    assign o_valid = !solver_busy && !o_busy && solver_valid;
-
 }
 
 module Day02Decoder (
@@ -455,61 +488,37 @@ embed (inline) sv{{{
     `timescale 1ns/1ps
 
     module test_day_02;
-        `include "aoc_tasks.svh"
+        localparam string   FILENAME = "day_02.txt";
+        localparam longint  EXPECTED = 64'd4174379265;
+        localparam longint  TIMEOUT  = 100000;
 
-        // Standard AoC signals
-        logic clk;
-        logic rst;
-        logic [7:0] i_data;
-        logic       i_valid;
-        logic [63:0] o_answer;
-        logic        o_busy;
-        logic        o_valid;
+        localparam BYTES    = 1;
+        localparam IDX_BITS = $clog2(BYTES + 1);
 
-        // Cycle counter
+        logic clk, rst;
         longint cycle_count;
-        logic counting;
 
-        aoc_Day02 dut (
-            .clk      (clk),
-            .rst      (rst),
-            .i_data   (i_data),
-            .i_valid  (i_valid),
-            .o_answer (o_answer),
-            .o_busy   (o_busy),
-            .o_valid  (o_valid)
+        logic [BYTES-1:0][7:0] i_data;
+        logic [IDX_BITS-1:0] i_available;
+        logic [IDX_BITS-1:0] o_consumed;
+        logic o_finished;
+        logic [63:0] o_answer;
+
+        aoc_Day02 #(.BYTES(BYTES)) dut (
+            .clk(clk), .rst(rst),
+            .i_data(i_data), .i_available(i_available),
+            .o_consumed(o_consumed), .o_finished(o_finished),
+            .o_answer(o_answer)
         );
 
-        // Clock generation (1 GHz = 1ns period)
-        initial clk = 0;
-        always #0.5 clk = ~clk;
+        initial begin clk = 0; forever #0.5 clk = ~clk; end
 
-        // Cycle counter: count from first i_valid to o_valid
-        initial begin
-            cycle_count = 0;
-            counting = 0;
-        end
-        always @(posedge clk) begin
-            if (i_valid && !counting) counting <= 1;
-            if (counting && !o_valid) cycle_count <= cycle_count + 1;
-        end
+        `include "aoc_tasks.svh"
 
-        // Test block: stream file, wait for result, assert answer
         initial begin
             aoc_init();
-            aoc_reset();
-            aoc_stream_file("day_02.txt");
-            while (!o_valid) @(posedge clk);
-            $display("[AoC] Final Answer: %0d", o_answer);
-            $display("[AoC] Cycles: %0d (%.3f ms at 1 GHz)", cycle_count, cycle_count / 1000000.0);
-            assert (o_answer == 64'd4174379265) else $error("Answer mismatch: expected %0d, got %0d", 64'd4174379265, o_answer);
-            $finish;
-        end
-
-        // Timeout block: fail after 1 second
-        initial begin
-            #1000000000;
-            $error("Timeout: test did not complete within 1 second");
+            aoc_run_test(FILENAME, TIMEOUT, cycle_count);
+            aoc_verify(EXPECTED, cycle_count);
             $finish;
         end
     endmodule

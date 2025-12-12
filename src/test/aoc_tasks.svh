@@ -2,98 +2,144 @@
 `define AOC_TASKS_SVH
 
 //==============================================================================
-// AoC Reusable Test Tasks
+// AoC Reusable Test Tasks (Wire-based)
 //
-// Include this file in your test module to get access to common test tasks.
-// Usage: `include "aoc_tasks.svh"
+// Include this file in your test module AFTER declaring:
+//   - logic clk                      : clock signal
+//   - logic rst                      : reset signal (active high = running)
+//   - logic [BYTES-1:0][7:0] i_data    : input data buffer
+//   - logic [IDX_BITS-1:0] i_available : bytes available in buffer
+//   - logic [IDX_BITS-1:0] o_consumed  : bytes consumed by DUT
+//   - logic o_finished                 : DUT finished signal
+//   - logic [63:0] o_answer            : answer from DUT
+//   - longint cycle_count              : cycle counter (written by aoc_run_test)
 //
-// These tasks assume the following signals exist in the test module:
-//   - clk       : logic (clock)
-//   - i_data    : logic [7:0] (input data to DUT)
-//   - i_valid   : logic (input valid signal)
-//   - o_busy    : logic (backpressure from DUT)
-//   - o_valid   : logic (output valid from DUT)
-//   - o_answer  : logic [63:0] (answer from DUT)
+// The tasks access these signals directly by name.
 //==============================================================================
 
-// Stream a file byte-by-byte to the DUT
-task automatic aoc_stream_file(input string filename);
-    int fd;
-    int char_in;
+// File handle for streaming (module-level so tasks can share)
+int aoc_fd;
 
-    fd = $fopen(filename, "rb");
-    if (fd == 0) begin
-        $error("[AoC] Failed to open input file: %s", filename);
+//------------------------------------------------------------------------------
+// aoc_init: Initialize signals and perform reset sequence
+//------------------------------------------------------------------------------
+task aoc_init();
+    int i;
+
+    // Initialize data signals
+    i_available = 0;
+    for (i = 0; i < $size(i_data); i++) begin
+        i_data[i] = 8'h00;
+    end
+
+    // Reset sequence: rst=0 (reset), wait, rst=1 (running)
+    rst = 0;
+    @(posedge clk);
+    @(posedge clk);
+    rst = 1;
+
+    $display("[AoC] Reset complete, starting test");
+endtask
+
+//------------------------------------------------------------------------------
+// aoc_run_test: Stream file to DUT, return when finished or timeout
+//
+// Reads incrementally from file as bytes are consumed.
+// Buffer is shifted on positive clock edge based on o_consumed.
+//------------------------------------------------------------------------------
+task aoc_run_test(
+    input string filename,
+    input longint timeout_cycles,
+    output longint cycles_taken
+);
+    int bytes_in_buffer;
+    int consumed_int;
+    int i;
+    int read_result;
+    logic [7:0] read_byte;
+
+    // Open file
+    aoc_fd = $fopen(filename, "rb");
+    if (aoc_fd == 0) begin
+        $error("[AoC] Failed to open file: %s", filename);
+        cycles_taken = 0;
         return;
     end
+    $display("[AoC] Opened file: %s", filename);
 
-    $display("[AoC] Streaming file: %s", filename);
+    // Initialize buffer state
+    bytes_in_buffer = 0;
 
-    @(negedge clk);
-    i_valid = 1;
-
-    while (!$feof(fd)) begin
-        char_in = $fgetc(fd);
-        if (char_in != -1) begin
-            i_data = 8'(char_in);
-            @(negedge clk);
-            while (o_busy == 1) @(negedge clk);
+    // Initial fill of buffer
+    while (bytes_in_buffer < $size(i_data) && !$feof(aoc_fd)) begin
+        read_result = $fread(read_byte, aoc_fd);
+        if (read_result > 0) begin
+            i_data[bytes_in_buffer] = read_byte;
+            bytes_in_buffer++;
         end
     end
+    i_available = bytes_in_buffer[$bits(i_available)-1:0];
 
-    // Send final newline to flush any pending data
-    i_data = 8'h0A;
-    @(negedge clk);
-    i_valid = 0;
+    // Main streaming loop
+    cycles_taken = 0;
 
-    $fclose(fd);
-    $display("[AoC] File streaming complete");
-endtask
+    while (!o_finished && cycles_taken < timeout_cycles) begin
+        #0.1;  // Let combinational logic settle
+        
+        consumed_int = int'(o_consumed);
 
-// Wait for DUT to produce a valid result with timeout
-task automatic aoc_wait_for_result(input int timeout_cycles = 1000000);
-    int cycle_count = 0;
-    while (!o_valid && cycle_count < timeout_cycles) begin
-        @(negedge clk);
-        cycle_count++;
+        // Shift out consumed bytes and refill from file
+        if (consumed_int > 0 && consumed_int <= bytes_in_buffer) begin
+            for (i = 0; i < $size(i_data); i++) begin
+                if (i + consumed_int < $size(i_data))
+                    i_data[i] = i_data[i + consumed_int];
+                else
+                    i_data[i] = 8'h00;
+            end
+            bytes_in_buffer = bytes_in_buffer - consumed_int;
+
+            while (bytes_in_buffer < $size(i_data) && !$feof(aoc_fd)) begin
+                read_result = $fread(read_byte, aoc_fd);
+                if (read_result > 0) begin
+                    i_data[bytes_in_buffer] = read_byte;
+                    bytes_in_buffer++;
+                end
+            end
+
+            i_available = bytes_in_buffer[$bits(i_available)-1:0];
+        end
+        
+        @(posedge clk);
+        cycles_taken++;
     end
-    if (cycle_count >= timeout_cycles)
-        $error("[AoC] Timeout waiting for result after %0d cycles", timeout_cycles);
-    else
-        $display("[AoC] Solution complete after %0d cycles", cycle_count);
+
+    $fclose(aoc_fd);
+
+    if (cycles_taken >= timeout_cycles) begin
+        $error("[AoC] Timeout after %0d cycles", timeout_cycles);
+    end else begin
+        $display("[AoC] Finished after %0d cycles", cycles_taken);
+    end
 endtask
 
-// Initialize signals to default state
-task automatic aoc_init();
-    rst = 0;
-    i_valid = 0;
-    i_data = 0;
-endtask
+//------------------------------------------------------------------------------
+// aoc_verify: Check answer and report results
+//------------------------------------------------------------------------------
+task aoc_verify(
+    input longint expected,
+    input longint cycles_taken
+);
+    $display("[AoC] Answer: %0d", o_answer);
+    $display("[AoC] Cycles: %0d (%.3f μs at 1 GHz)", cycles_taken, cycles_taken / 1000.0);
 
-// Perform standard reset sequence
-task automatic aoc_reset();
-    rst = 0;
-    #20;
-    rst = 1;
-    #10;
-endtask
-
-// Run a complete test: init, reset, stream file, wait for result, display answer
-task automatic aoc_run_test(input string filename);
-    aoc_init();
-    aoc_reset();
-    aoc_stream_file(filename);
-    aoc_wait_for_result();
-    #100;
-    $display("[AoC] Final Answer: %0d", o_answer);
-endtask
-
-// Check answer against expected value
-task automatic aoc_check_answer(input longint expected);
-    if (o_answer == expected)
-        $display("[AoC] PASS: Answer %0d matches expected", o_answer);
-    else
-        $error("[AoC] FAIL: Expected %0d, got %0d", expected, o_answer);
+    if (expected != 0) begin
+        if (o_answer == expected)
+            $display("[AoC] PASS: Answer matches expected");
+        else
+            $error("[AoC] FAIL: Expected %0d, got %0d", expected, o_answer);
+    end else begin
+        $display("[AoC] (No expected value provided, skipping verification)");
+    end
 endtask
 
 `endif // AOC_TASKS_SVH

@@ -1,0 +1,172 @@
+/// Find the index of the first occurrence of a delimiter byte in the input data.
+/// If not found within the available bytes, returns bytes_available.
+pub module FindDelimiter #(
+    param BYTES    : u32      = 32   ,
+    param DELIMITER: logic<8> = 8'h0A, // Default: newline
+) (
+    i_available: input logic<IDX_BITS>  ,
+    i_data     : input logic<BYTES, 8>  ,
+
+    o_index: output logic<IDX_BITS>,
+    o_match: output logic          ,
+) {
+    const IDX_BITS: u32 = $clog2(BYTES + 1);
+
+    // Priority encoder: find the first matching byte
+    always_comb {
+        o_index = i_available;
+        o_match = 0;
+
+        for i: u32 in 0..BYTES {
+            if i_data[i] == DELIMITER {
+                o_index = i as IDX_BITS;
+                o_match = 1;
+                break;
+            }
+        }
+    }
+}
+
+/// Find the first byte that is NOT a digit (0-9).
+/// Returns the index of the first non-digit, or bytes_available if all are digits.
+pub module FindNonDigit #(
+    param BUS_BYTES: u32 = 32,
+) (
+    i_data           : input logic<BUS_BYTES * 8>        ,
+    i_bytes_available: input logic<$clog2(BUS_BYTES + 1)>,
+
+    o_found: output logic                       , // Non-digit found?
+    o_index: output logic<$clog2(BUS_BYTES + 1)>, // Index of first non-digit
+) {
+    const IDX_BITS: u32 = $clog2(BUS_BYTES + 1);
+
+    // Parallel check: is each byte a digit?
+    var is_digit: logic<BUS_BYTES>;
+
+    always_comb {
+        for i: u32      in 0..BUS_BYTES {
+            let byte_val   : logic<8> = i_data[i * 8+:8];
+            is_digit[i] = byte_val >= 8'h30 && byte_val <= 8'h39;
+        }
+    }
+
+    // Priority encoder: find first non-digit within available bytes
+    var found    : logic          ;
+    var found_idx: logic<IDX_BITS>;
+
+    always_comb {
+        found     = 0;
+        found_idx = i_bytes_available;
+
+        for i: u32 in 0..BUS_BYTES {
+            if !found && !is_digit[i] && i[IDX_BITS - 1:0] <: i_bytes_available {
+                found     = 1;
+                found_idx = i[IDX_BITS - 1:0];
+            }
+        }
+
+        o_found = found;
+        o_index = found_idx;
+    }
+}
+
+/// Parse consecutive ASCII digits starting from a given offset.
+/// Returns the parsed number and how many digits were consumed.
+///
+/// Parses up to MAX_DIGITS digits or until a non-digit is encountered.
+pub module ParseNumber #(
+    param BUS_BYTES : u32 = 32,
+    param MAX_DIGITS: u32 = 10, // Max digits to parse at once
+    param OUT_WIDTH : u32 = 32, // Output number width
+) (
+    i_data           : input logic<BUS_BYTES * 8>        ,
+    i_bytes_available: input logic<$clog2(BUS_BYTES + 1)>,
+    i_offset         : input logic<$clog2(BUS_BYTES)>    , // Start offset
+
+    o_value      : output logic<OUT_WIDTH>                 , // Parsed number
+    o_digits_read: output logic<$clog2(MAX_DIGITS + 1) + 1>, // Digits consumed (0 if none)
+    o_valid      : output logic                            , // At least one digit found
+) {
+    const IDX_BITS  : u32 = $clog2(BUS_BYTES + 1);
+    const DIGIT_BITS: u32 = $clog2(MAX_DIGITS + 1) + 1;
+
+    // Extract digit values for positions starting at offset
+    var digit_values: logic<4>          [MAX_DIGITS];
+    var is_valid    : logic<MAX_DIGITS>             ;
+
+    always_comb {
+        for i: u32             in 0..MAX_DIGITS {
+            let pos     : logic<IDX_BITS> = {1'b0, i_offset} + i[IDX_BITS - 1:0];
+            let byte_val: logic<8>        = i_data[pos[4:0] * 8+:8]; // pos * 8
+
+            digit_values[i] = byte_val[3:0];
+            is_valid[i]     = (pos <: i_bytes_available) && (byte_val >= 8'h30) && (byte_val <= 8'h39);
+        }
+    }
+
+    // Find how many consecutive digits we have
+    var num_digits: logic<DIGIT_BITS>;
+
+    always_comb {
+        num_digits = 0;
+
+        for i: u32 in 0..MAX_DIGITS {
+            if is_valid[i] && num_digits == i[DIGIT_BITS - 1:0] {
+                num_digits = i[DIGIT_BITS - 1:0] + 1;
+            }
+        }
+    }
+
+    // Build the number from digits (multiply-accumulate)
+    // This creates a tree of adders, but for small MAX_DIGITS it's fine
+    var result: logic<OUT_WIDTH>;
+
+    always_comb {
+        result = 0;
+
+        // Unrolled Horner's method for up to MAX_DIGITS
+        for i: u32 in 0..MAX_DIGITS {
+            if i[DIGIT_BITS - 1:0] <: num_digits {
+                // result = result * 10 + digit
+                result = result * 10 + {28'b0, digit_values[i]};
+            }
+        }
+
+        o_value       = result;
+        o_digits_read = num_digits;
+        o_valid       = num_digits >: 0;
+    }
+}
+
+/// Extract a single byte at a given offset.
+/// Simple helper for byte-level operations.
+pub module GetByte #(
+    param BUS_BYTES: u32 = 32,
+) (
+    i_data  : input logic<BUS_BYTES * 8>    ,
+    i_offset: input logic<$clog2(BUS_BYTES)>,
+
+    o_byte: output logic<8>,
+) {
+    always_comb {
+        o_byte = i_data[i_offset * 8+:8];
+    }
+}
+
+/// Shift data left by a variable number of bytes.
+/// Used to consume processed bytes from the buffer.
+pub module ShiftData #(
+    param BUS_BYTES: u32 = 32,
+) (
+    i_data    : input logic<BUS_BYTES * 8>        ,
+    i_shift_by: input logic<$clog2(BUS_BYTES + 1)>,
+
+    o_data: output logic<BUS_BYTES * 8>,
+) {
+    const BUS_BITS: u32 = BUS_BYTES * 8;
+
+    always_comb {
+        // Shift by shift_by bytes = shift_by * 8 bits
+        o_data = i_data >> ({3'b0, i_shift_by} * 8);
+    }
+}

@@ -20,4 +20,9 @@ include_files = [
 ]
 
 [test.verilator]
-compile_args = ["+incdir+src/test", "-Wno-TIMESCALEMOD"]
+compile_args = [
+    "+incdir+src/test",
+    "-Wno-TIMESCALEMOD",
+    "-trace-max-array",
+    "256",
+]
