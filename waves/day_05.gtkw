@@ -1,20 +1,20 @@
 [*]
 [*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
-[*] Fri Dec  5 11:37:36 2025
+[*] Tue Dec 16 20:25:05 2025
 [*]
-[dumpfile] "/home/marcus/dev/experimental/advent-of-code-2025/src/test_day_05.vcd"
-[dumpfile_mtime] "Fri Dec  5 11:37:24 2025"
-[dumpfile_size] 16201
-[savefile] "/home/marcus/dev/experimental/advent-of-code-2025/src/day_05.gtkw"
+[dumpfile] "/home/marcus/dev/working/advent-of-hardware-2025/src/test_day_05.vcd"
+[dumpfile_mtime] "Tue Dec 16 20:23:33 2025"
+[dumpfile_size] 52128
+[savefile] "/home/marcus/dev/working/advent-of-hardware-2025/waves/day_05.gtkw"
 [timestart] 0
 [size] 1728 973
 [pos] -1 -1
-*-13.606081 41520 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+*-12.192492 1700 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
 [treeopen] TOP.
 [treeopen] TOP.test_day_05.
 [treeopen] TOP.test_day_05.dut.
 [sst_width] 297
-[signals_width] 192
+[signals_width] 292
 [sst_expanded] 1
 [sst_vpaned_height] 287
 @28
@@ -22,29 +22,37 @@ TOP.test_day_05.clk
 TOP.test_day_05.rst
 @200
 -
+@24
+TOP.test_day_05.dut.decoder.i_available[5:0]
 @820
-TOP.test_day_05.dut.decoder.i_data[7:0]
+TOP.test_day_05.dut.decoder.i_data[255:0]
 @28
 TOP.test_day_05.dut.decoder.i_busy
-TOP.test_day_05.dut.decoder.o_busy
-TOP.test_day_05.dut.decoder.o_range_valid
+TOP.test_day_05.dut.decoder.valid
+@22
+TOP.test_day_05.dut.decoder.o_consumed[5:0]
+@28
 TOP.test_day_05.dut.decoder.o_done
 @200
 -
-@25
+@24
 TOP.test_day_05.dut.solver.i_start[63:0]
 TOP.test_day_05.dut.solver.i_end[63:0]
 TOP.test_day_05.dut.solver.state[2:0]
-@29
-TOP.test_day_05.dut.solver.has_overlap
-@28
-TOP.test_day_05.dut.solver.has_empty
-TOP.test_day_05.dut.solver.has_occupied
 @22
 TOP.test_day_05.dut.solver.occupied[127:0]
 TOP.test_day_05.dut.solver.count_mask[127:0]
+@23
 TOP.test_day_05.dut.solver.overlap_mask[127:0]
+@22
+TOP.test_day_05.dut.solver.scan_mask[127:0]
 @24
-TOP.test_day_05.dut.solver.answer[63:0]
+TOP.test_day_05.dut.solver.first_empty_idx[6:0]
+TOP.test_day_05.dut.solver.first_occupied_idx[6:0]
+TOP.test_day_05.dut.solver.first_overlap_idx[6:0]
+@28
+TOP.test_day_05.dut.solver.o_finished
+@24
+TOP.test_day_05.dut.solver.o_answer[63:0]
 [pattern_trace] 1
 [pattern_trace] 0

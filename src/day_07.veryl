@@ -30,10 +30,10 @@ pub module Day07 #(
     var line     : logic<LINE_WIDTH>;
     var next_line: logic<LINE_WIDTH>;
 
-    var s_eol_match: logic          ;
+    var s_eol_found: logic          ;
     var s_eol_index: logic<IDX_BITS>;
 
-    var s_start_match: logic          ;
+    var s_start_found: logic          ;
     var s_start_index: logic<IDX_BITS>;
 
     inst find_delimiter: FindDelimiter #(
@@ -43,7 +43,7 @@ pub module Day07 #(
         i_data     : i_data     ,
         i_available: i_available,
         o_index    : s_eol_index,
-        o_match    : s_eol_match,
+        o_found    : s_eol_found,
     );
 
     inst find_start: FindDelimiter #(
@@ -53,7 +53,7 @@ pub module Day07 #(
         i_data     : i_data       ,
         i_available: i_available  ,
         o_index    : s_start_index,
-        o_match    : s_start_match,
+        o_found    : s_start_found,
     );
 
     always_ff {
@@ -66,13 +66,13 @@ pub module Day07 #(
         } else {
             case state {
                 State::Init: {
-                    if s_start_match {
+                    if s_start_found {
                         let offset: logic<CURSOR_BITS> = s_start_index as CURSOR_BITS;
 
                         beams[cursor + offset] = 1;
                     }
 
-                    if s_eol_match {
+                    if s_eol_found {
                         cursor = 0;
                         state  = State::Collect;
 
@@ -84,7 +84,7 @@ pub module Day07 #(
                 State::Collect: {
                     line = next_line;
 
-                    if s_eol_match || i_available != BYTES as IDX_BITS {
+                    if s_eol_found || i_available != BYTES as IDX_BITS {
                         cursor = 0;
                         state  = State::Propagate;
 
@@ -142,7 +142,7 @@ pub module Day07 #(
 
             enabled = i_data[i] == 8'h5E; // '^'
 
-            if s_eol_match && i >: s_eol_index {
+            if s_eol_found && i >: s_eol_index {
                 enabled = 0;
             }
 
@@ -168,7 +168,7 @@ pub module Day07 #(
         o_consumed = i_available;
         o_finished = state == State::Done;
 
-        if s_eol_match {
+        if s_eol_found {
             o_consumed = s_eol_index + 1;
         }
 
@@ -193,9 +193,10 @@ embed (inline) sv{{{
         logic clk, rst;
         longint cycle_count;
 
-        logic [BYTES-1:0][7:0] i_data;
         logic [IDX_BITS-1:0] i_available;
         logic [IDX_BITS-1:0] o_consumed;
+        logic [BYTES-1:0][7:0] i_data;
+        logic i_eof;
         logic o_finished;
         logic [63:0] o_answer;
 

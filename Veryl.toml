@@ -16,6 +16,7 @@ include_files = [
     "data/examples/day_05.txt",
     "data/examples/day_06.txt",
     "data/examples/day_07.txt",
+    "data/examples/day_08.txt",
     "src/test/aoc_tasks.svh",
 ]
 
@@ -25,4 +26,5 @@ compile_args = [
     "-Wno-TIMESCALEMOD",
     "-trace-max-array",
     "256",
+    "-Wno-WIDTHEXPAND",
 ]

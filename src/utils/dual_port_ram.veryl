@@ -1,0 +1,43 @@
+pub module DualPortRam #(
+    param SIZE     : u32 = 1024,
+    param WORD_SIZE: u32 = 64  ,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_addr_a: input logic<SIZE_IDX> ,
+    i_data_a: input logic<WORD_SIZE>,
+    i_we_a  : input logic           ,
+
+    i_addr_b: input logic<SIZE_IDX> ,
+    i_data_b: input logic<WORD_SIZE>,
+    i_we_b  : input logic           ,
+
+    o_data_a: output logic<WORD_SIZE>,
+    o_data_b: output logic<WORD_SIZE>,
+) {
+    const SIZE_IDX: u32 = $clog2(SIZE);
+
+    var mem: logic<WORD_SIZE> [SIZE];
+
+    always_ff {
+        if_reset {
+            mem      = '{default: '0};
+            o_data_a = '0;
+            o_data_b = '0;
+
+        } else {
+            if i_we_a {
+                mem[i_addr_a] = i_data_a;
+            }
+
+            if i_we_b {
+                mem[i_addr_b] = i_data_b;
+            }
+
+            o_data_a = mem[i_addr_a];
+            o_data_b = mem[i_addr_b];
+        }
+    }
+
+}

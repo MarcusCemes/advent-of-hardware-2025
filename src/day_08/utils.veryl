@@ -1,0 +1,152 @@
+
+
+/// Shift-register style rolling window to control worker compare/set signals.
+/// Each worker can either be idle (00), set (01) or compare (10). The initial
+/// state is that worker 0 is in "set" mode, others are idle. With each `i_enable`
+/// clock cycle, the "set" signal propagates to the next worker, and the previous
+/// worker transitions from "set" to a permanent "compare" state.
+module Day08ShiftWindow #(
+    param SIZE: u32 = 4,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_clear : input logic,
+    i_enable: input logic,
+
+    o_window: output logic<SIZE, 2>,
+) {
+    always_ff {
+        if_reset {
+            o_window    = '0;
+            o_window[0] = 2'b01;
+
+        } else if i_clear {
+            o_window    = '0;
+            o_window[0] = 2'b01;
+
+        } else if i_enable {
+            for i: u32      in 0..SIZE {
+                let previous: logic<2> = case i {
+                    0      : 2'b01,
+                    default: o_window[i - 1],
+                };
+
+                o_window[i][0] =  (o_window[i] == '0) && previous[0];
+                o_window[i][1] |= o_window[i][0];
+            }
+        }
+    }
+}
+
+module Day08TopCounter #(
+    param SIZE: u32 = 1024,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_size : input logic<SIZE_LEN>,
+    i_valid: input logic          ,
+
+    o_top: output logic<COUNT, SIZE_LEN>,
+) {
+    const COUNT   : u32 = 3;
+    const SIZE_LEN: u32 = $clog2(SIZE + 1);
+
+    always_ff {
+        if_reset {
+            o_top = '{default: '0};
+
+        } else if i_valid {
+            // Insert i_size into sorted top-3 (largest first)
+            if i_size >: o_top[0] {
+                // New largest: shift everything down
+                o_top[2] = o_top[1];
+                o_top[1] = o_top[0];
+                o_top[0] = i_size;
+            } else if i_size >: o_top[1] {
+                // Second largest
+                o_top[2] = o_top[1];
+                o_top[1] = i_size;
+            } else if i_size >: o_top[2] {
+                // Third largest
+                o_top[2] = i_size;
+            }
+        }
+    }
+}
+
+module Day08VectorStorage #(
+    param DIM_BITS: u32 = 17  ,
+    param DIMS    : u32 = 3   ,
+    param SIZE    : u32 = 1024,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_addr_a: input logic<SIZE_IDX>,
+    i_addr_b: input logic<SIZE_IDX>,
+
+    i_data: input logic<DIMS, DIM_BITS>,
+    i_push: input logic                ,
+
+    o_length  : output logic<SIZE_LEN>      ,
+    o_vector_a: output logic<DIMS, DIM_BITS>,
+    o_vector_b: output logic<DIMS, DIM_BITS>,
+) {
+    const SIZE_IDX : u32 = $clog2(SIZE);
+    const SIZE_LEN : u32 = $clog2(SIZE + 1);
+    const WORD_SIZE: u32 = 64;
+
+    var addr_a    : logic<SIZE_IDX>;
+    var data_a_in : logic<64>      ;
+    var data_a_out: logic<64>      ;
+    var we_a      : logic          ;
+
+    var addr_b    : logic<SIZE_IDX>;
+    var data_b_out: logic<64>      ;
+
+    inst ram: DualPortRam #(
+        SIZE       ,
+        WORD_SIZE  ,
+    ) (
+        clk                 ,
+        rst                 ,
+        i_addr_a: addr_a    ,
+        i_data_a: data_a_in ,
+        i_we_a  : we_a      ,
+        i_addr_b: addr_b    ,
+        i_data_b: '0        ,
+        i_we_b  : '0        ,
+        o_data_a: data_a_out,
+        o_data_b: data_b_out,
+    );
+
+    always_ff {
+        if_reset {
+            o_length = '0;
+
+        } else if we_a {
+            o_length += 1;
+        }
+
+    }
+
+    always_comb {
+        addr_a    = i_addr_a;
+        addr_b    = i_addr_b;
+        data_a_in = i_data as WORD_SIZE;
+        we_a      = '0;
+
+        if i_push && o_length != '1 {
+            addr_a = o_length as SIZE_IDX;
+            we_a   = '1;
+        }
+
+        // Unpack 64-bit word into logic<3, 17> - each element is 17 bits
+        for i: u32 in 0..DIMS {
+            o_vector_a[i] = data_a_out[i * DIM_BITS+:DIM_BITS] as DIM_BITS;
+            o_vector_b[i] = data_b_out[i * DIM_BITS+:DIM_BITS] as DIM_BITS;
+        }
+    }
+}

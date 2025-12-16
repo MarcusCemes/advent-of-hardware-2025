@@ -1,0 +1,343 @@
+module Day08UnionFind #(
+    param SIZE: u32 = 1024,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_a           : input logic<SIZE_IDX>,
+    i_b           : input logic<SIZE_IDX>,
+    i_done        : input logic          ,
+    i_valid       : input logic          ,
+    i_vector_count: input logic<SIZE_LEN>,
+
+    o_answer: output logic<64>,
+    o_busy  : output logic    ,
+) {
+    const PATH_SIZE: u32 = 16;
+    const SIZE_IDX : u32 = $clog2(SIZE);
+    const SIZE_LEN : u32 = $clog2(SIZE + 1);
+    const TOP_COUNT: u32 = 3;
+    const WORD_SIZE: u32 = 32;
+
+    enum State {
+        Init,
+        Idle,
+        FindRoots,
+        Union,
+        PathCompress,
+        Count,
+        Done,
+    }
+
+    var cursor    : logic<SIZE_IDX>;
+    var cursor_end: logic          ;
+    var ram_wait  : logic          ;
+    var state     : State          ;
+
+    var current_a  : logic<SIZE_IDX>;
+    var current_b  : logic<SIZE_IDX>;
+    var larger_root: logic<SIZE_IDX>;
+    var source_a   : logic<SIZE_IDX>;
+    var source_b   : logic<SIZE_IDX>;
+
+    var addr_a    : logic<SIZE_IDX> ;
+    var data_a_in : logic<WORD_SIZE>;
+    var data_a_out: logic<WORD_SIZE>;
+    var we_a      : logic           ;
+
+    var addr_b    : logic<SIZE_IDX> ;
+    var data_b_in : logic<WORD_SIZE>;
+    var data_b_out: logic<WORD_SIZE>;
+    var we_b      : logic           ;
+
+    var stored_parent_a: logic<SIZE_IDX>;
+    var stored_parent_b: logic<SIZE_IDX>;
+    var stored_size_a  : logic<SIZE_LEN>;
+    var stored_size_b  : logic<SIZE_LEN>;
+    var root_a_found   : logic          ;
+    var root_b_found   : logic          ;
+
+    var empty_a : logic          ;
+    var push_a  : logic          ;
+    var pop_a   : logic          ;
+    var popped_a: logic<SIZE_IDX>;
+
+    var empty_b : logic          ;
+    var push_b  : logic          ;
+    var pop_b   : logic          ;
+    var popped_b: logic<SIZE_IDX>;
+
+    var queue_clear: logic          ;
+    var merged_size: logic<SIZE_LEN>;
+    var start_valid: logic          ;
+
+    var counter_valid: logic                     ;
+    var top          : logic<TOP_COUNT, SIZE_LEN>;
+
+    inst roots: DualPortRam #(
+        SIZE       ,
+        WORD_SIZE  ,
+    ) (
+        clk                 ,
+        rst                 ,
+        i_addr_a: addr_a    ,
+        i_data_a: data_a_in ,
+        i_we_a  : we_a      ,
+        i_addr_b: addr_b    ,
+        i_data_b: data_b_in ,
+        i_we_b  : we_b      ,
+        o_data_a: data_a_out,
+        o_data_b: data_b_out,
+    );
+
+    inst queue_a: $std::fifo #(
+        DEPTH: PATH_SIZE,
+        WIDTH: SIZE_IDX ,
+    ) (
+        i_clk        : clk        ,
+        i_rst        : rst        ,
+        i_clear      : queue_clear,
+        o_empty      : empty_a    ,
+        o_almost_full: _          ,
+        o_full       : _          ,
+        o_word_count : _          ,
+        i_push       : push_a     ,
+        i_data       : current_a  ,
+        i_pop        : pop_a      ,
+        o_data       : popped_a   ,
+    );
+
+    inst queue_b: $std::fifo #(
+        DEPTH: PATH_SIZE,
+        WIDTH: SIZE_IDX ,
+    ) (
+        i_clk        : clk        ,
+        i_rst        : rst        ,
+        i_clear      : queue_clear,
+        o_empty      : empty_b    ,
+        o_almost_full: _          ,
+        o_full       : _          ,
+        o_word_count : _          ,
+        i_push       : push_b     ,
+        i_data       : current_b  ,
+        i_pop        : pop_b      ,
+        o_data       : popped_b   ,
+    );
+
+    inst counter: Day08TopCounter #(
+        SIZE  ,
+    ) (
+        clk                   ,
+        rst                   ,
+        i_size : stored_size_a,
+        i_valid: counter_valid,
+        o_top  : top          ,
+    );
+
+    always_ff {
+        if_reset {
+            current_a   = '0;
+            current_b   = '0;
+            cursor      = '0;
+            larger_root = '0;
+            merged_size = '0;
+            ram_wait    = '0;
+            source_a    = '0;
+            source_b    = '0;
+            state       = State::Init;
+
+        } else {
+            case state {
+                State::Init: {
+                    if cursor == SIZE - 1 {
+                        cursor = '0;
+                        state  = State::Idle;
+                    } else {
+                        cursor += 1;
+                    }
+                }
+
+                State::Idle: {
+                    if i_done {
+                        state = State::Count;
+                    } else if start_valid {
+                        source_a  = i_a;
+                        source_b  = i_b;
+                        current_a = i_a;
+                        current_b = i_b;
+                        state     = State::FindRoots;
+                    }
+                }
+
+                State::FindRoots: {
+                    ram_wait = !ram_wait;
+
+                    if ram_wait {
+                        if !root_a_found {
+                            current_a = stored_parent_a;
+                        }
+
+                        if !root_b_found {
+                            current_b = stored_parent_b;
+                        }
+
+                        // Roots may not be registered yet, so use current
+                        if root_a_found && root_b_found {
+                            merged_size = stored_size_a + stored_size_b;
+                            ram_wait    = '0;
+
+                            // If the roots are the same, they are already connected
+                            if current_a == current_b {
+                                state    = State::Idle;
+                            } else {
+                                larger_root = if stored_size_a >= stored_size_b ? current_a : current_b;
+                                state       = State::Union;
+                            }
+                        }
+                    }
+                }
+
+                State::Union: {
+                    state    = State::PathCompress;
+                }
+
+                State::PathCompress: {
+                    if empty_a && empty_b {
+                        state = State::Idle;
+                    }
+                }
+
+                State::Count: {
+                    if cursor_end {
+                        state    = State::Done;
+                    } else {
+                        cursor += 1;
+                    }
+                }
+
+                default: {}
+            }
+        }
+    }
+
+    // RAM logic
+    always_comb {
+        addr_a    = i_a;
+        addr_b    = i_b;
+        data_a_in = '0;
+        data_b_in = '0;
+        we_a      = '0;
+        we_b      = '0;
+
+        cursor_end = cursor == i_vector_count - 1;
+
+        // Unpack RAM data: [size:parent]
+        stored_parent_a = data_a_out[15:0] as SIZE_IDX;
+        stored_parent_b = data_b_out[15:0] as SIZE_IDX;
+        stored_size_a   = data_a_out[31:16] as SIZE_LEN;
+        stored_size_b   = data_b_out[31:16] as SIZE_LEN;
+
+        root_a_found = current_a == stored_parent_a;
+        root_b_found = current_b == stored_parent_b;
+
+        case state {
+            State::Init: {
+                addr_a    = cursor;
+                data_a_in = {16'd1, cursor as 16}; // size=1, parent=self
+                we_a      = 1;
+            }
+
+            // Pre-fetch first address for State::Count to account for RAM latency
+            State::Idle: {
+                if i_done {
+                    addr_a = '0;
+                }
+            }
+
+            State::FindRoots: {
+                addr_a = current_a;
+                addr_b = current_b;
+            }
+
+            State::Union: {
+                // Write to the actual roots, not the original nodes
+                // Winner root: update size, keep self-parent
+                // Loser root: point to winner
+                addr_a    = current_a;
+                addr_b    = current_b;
+                data_a_in = {merged_size as 16, larger_root as 16};
+                data_b_in = {merged_size as 16, larger_root as 16};
+                we_a      = 1;
+                we_b      = 1;
+            }
+
+            // Point all nodes in the path directly to the root, skipping the root itself
+            State::PathCompress: {
+                if !empty_a && popped_a != current_a {
+                    addr_a    = popped_a;
+                    data_a_in = {16'0, larger_root as 16};
+                    we_a      = 1;
+                }
+
+                if !empty_b && popped_b != current_b {
+                    addr_b    = popped_b;
+                    data_b_in = {16'0, larger_root as 16};
+                    we_b      = 1;
+                }
+            }
+
+            State::Count: {
+                addr_a = cursor;
+
+                if !cursor_end {
+                    addr_a = cursor + 1;
+                }
+            }
+
+            default: {}
+        }
+    }
+
+    // Queue logic
+    always_comb {
+        push_a      = '0;
+        pop_a       = '0;
+        push_b      = '0;
+        pop_b       = '0;
+        queue_clear = '0;
+
+        case state {
+            State::FindRoots: {
+                push_a = !root_a_found;
+                push_b = !root_b_found;
+
+                // Clear if roots found and they are the same
+                if ram_wait && root_a_found && root_b_found && current_a == current_b {
+                    queue_clear = '1;
+                }
+            }
+
+            State::PathCompress: {
+                pop_a = !empty_a;
+                pop_b = !empty_b;
+            }
+
+            default: {}
+        }
+    }
+
+    always_comb {
+        let is_cursor_root: logic = cursor == stored_parent_a;
+
+        counter_valid = state == State::Count && is_cursor_root;
+        start_valid   = i_valid && i_a != i_b;
+
+        o_answer = 64'd1;
+
+        o_busy = (state != State::Idle && state != State::Done) || (i_done && state != State::Done);
+
+        for i: u32 in 0..TOP_COUNT {
+            o_answer *= top[i] as 64;
+        }
+    }
+}

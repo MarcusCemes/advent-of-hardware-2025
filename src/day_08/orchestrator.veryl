@@ -1,0 +1,287 @@
+module Day08Orchestrator #(
+    param CONNECTIONS: u32 = 1000,
+    param DIM_BITS   : u32 = 17  ,
+    param DIMS       : u32 = 3   ,
+    param OUTPUT_BITS: u32 = 64  ,
+    param QUEUE_DEPTH: u32 = 16  ,
+    param WORKERS    : u32 = 4   ,
+    param SIZE       : u32 = 1024,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_vector: input logic<DIMS, DIM_BITS>,
+    i_eof   : input logic                ,
+    i_valid : input logic                ,
+
+    o_answer  : output logic<64>,
+    o_finished: output logic    ,
+) {
+    const CONNECTIONS_LEN: u32 = $clog2(CONNECTIONS + 1);
+    const IDX_BITS       : u32 = 14;
+    const SIZE_IDX       : u32 = $clog2(SIZE);
+    const SIZE_IDX_EXT   : u32 = $clog2(SIZE + WORKERS);
+    const SIZE_LEN       : u32 = $clog2(SIZE + 1);
+    const WORKERS_IDX    : u32 = $clog2(WORKERS);
+
+    enum State {
+        Init,
+        ReadVectors,
+        Broadcast,
+        StartDrain,
+        Drain,
+        Done,
+    }
+
+    var connection_counter: logic<CONNECTIONS_LEN>    ;
+    var cursors           : logic<SIZE_IDX>        [2];
+    var cursor_end        : logic<2>                  ;
+    var drain             : logic                     ;
+    var state             : State                     ;
+
+    var worker_mask_busy : logic<WORKERS>    ;
+    var worker_mask_empty: logic<WORKERS>    ;
+    var worker_mask_pop  : logic<WORKERS>    ;
+    var worker_tops      : logic<WORKERS, 64>;
+
+    var min_worker_idx: logic<WORKERS_IDX>;
+
+    var addr_a         : logic<SIZE_IDX>      ;
+    var addr_b         : logic<SIZE_IDX>      ;
+    var broadcast_valid: logic                ;
+    var data_a         : logic<DIMS, DIM_BITS>;
+    var data_b         : logic<DIMS, DIM_BITS>;
+    var vector_count   : logic<SIZE_LEN>      ;
+
+    var rolling_mask       : logic<WORKERS, 2>;
+    var rolling_mask_clear : logic            ;
+    var rolling_mask_enable: logic            ;
+
+    var union_busy : logic          ;
+    var union_valid: logic          ;
+    var next_a     : logic<SIZE_IDX>;
+    var next_b     : logic<SIZE_IDX>;
+
+    inst storage: Day08VectorStorage (
+        clk                     ,
+        rst                     ,
+        i_addr_a  : addr_a      ,
+        i_addr_b  : addr_b      ,
+        i_data    : i_vector    ,
+        i_push    : i_valid     ,
+        o_vector_a: data_a      ,
+        o_vector_b: data_b      ,
+        o_length  : vector_count,
+    );
+
+    inst shift_window: Day08ShiftWindow #(
+        SIZE: WORKERS,
+    ) (
+        clk                          ,
+        rst                          ,
+        i_clear : rolling_mask_clear ,
+        i_enable: rolling_mask_enable,
+        o_window: rolling_mask       ,
+    );
+
+    for i in 0..WORKERS :worker {
+        inst worker: Day08Worker #(
+            DIM_BITS      ,
+            INDEX      : i,
+            OUTPUT_BITS   ,
+            QUEUE_DEPTH   ,
+            SIZE          ,
+        ) (
+            clk                                     ,
+            rst                                     ,
+            i_bus    : data_b                       ,
+            i_idx    : cursors[1]                   , // inner cursor
+            i_compare: rolling_mask[i][1]           , // compare as v_j
+            i_drain  : drain                        , // drain signal
+            i_pop    : worker_mask_pop[i]           ,
+            i_set_ref: rolling_mask[i][0]           , // save as v_i
+            i_valid  : broadcast_valid | union_valid,
+            o_busy   : worker_mask_busy[i]          ,
+            o_empty  : worker_mask_empty[i]         ,
+            o_top    : worker_tops[i]               ,
+        );
+    }
+
+    inst union_find: Day08UnionFind #(
+        SIZE  ,
+    ) (
+        clk                                 ,
+        rst                                 ,
+        i_a           : next_a              ,
+        i_b           : next_b              ,
+        i_done        : state == State::Done,
+        i_valid       : union_valid         ,
+        i_vector_count: vector_count        ,
+        o_answer                            ,
+        o_busy        : union_busy          ,
+    );
+
+    always_ff (clk, rst) {
+        if_reset {
+            connection_counter = '0;
+            cursors            = '{default: '0};
+            state              = State::Init;
+
+        } else {
+            case state {
+                State::Init: {
+                    state = State::ReadVectors;
+                }
+
+                State::ReadVectors: {
+                    if i_eof {
+                        state = State::Broadcast;
+                    }
+                }
+
+                // Continually sweep through vector pairs by incrementing the inner cursor
+                // until it reaches the end, then incrementing the outer cursor and resetting
+                // the inner cursor to the outer cursor's new value.
+                State::Broadcast: {
+                    if broadcast_valid {
+                        if cursor_end[1] {
+                            if cursor_end[0] {
+                                state = State::StartDrain;
+
+                            } else {
+                                let next_cursor: logic<SIZE_IDX> = cursors[0] + WORKERS as SIZE_IDX;
+                                cursors[0]  = next_cursor;
+                                cursors[1]  = next_cursor;
+                            }
+
+                        } else {
+                            cursors[1] += 1;
+                        }
+                    }
+
+                }
+
+                State::StartDrain: {
+                    if worker_mask_busy == '0 && !union_busy {
+                        state = State::Drain;
+                    }
+                }
+
+                State::Drain: {
+                    if connection_counter == CONNECTIONS {
+                        connection_counter = '0;
+                        state              = State::Done;
+                    }
+
+                    if !union_busy && union_valid {
+                        connection_counter += 1;
+                    }
+                }
+
+                default: {}
+            }
+
+        }
+    }
+
+    // RAM addressing logic
+    always_comb {
+        addr_a          = '0;
+        addr_b          = cursors[1];
+        broadcast_valid = '0;
+
+        // Outer cursor increments by WORKERS each full pass, a comparison is needed
+        let next_outer: logic<SIZE_IDX_EXT> = cursors[0] as SIZE_IDX_EXT + WORKERS as SIZE_IDX_EXT;
+
+        cursor_end[0] = next_outer >= vector_count as SIZE_IDX_EXT;
+        cursor_end[1] = cursors[1] == (vector_count - 1) as SIZE_IDX;
+
+        // RAM reads have 1-cycle latency
+        case state {
+            // Read addresses are already set to '0, the correct data is
+            // being pre-fetched for Broadcast
+            State::ReadVectors: {}
+
+            // The read address needs to lead the current cursor registers by 1
+            // to ensure data is ready when needed. If we're at the end, wrap
+            // around to the incremented outer cursor, otherwise just add 1.
+            State::Broadcast: {
+                broadcast_valid = worker_mask_busy == '0;
+
+                if broadcast_valid {
+                    addr_b = cursors[1] + 1 as SIZE_IDX;
+
+                    if cursor_end[1] {
+                        addr_b = next_outer as SIZE_IDX;
+                    }
+                }
+            }
+
+            default: {}
+        }
+    }
+
+    // Rolling mask control
+    always_comb {
+        rolling_mask_clear  = '0;
+        rolling_mask_enable = '0;
+
+        if state == State::Broadcast && broadcast_valid {
+            rolling_mask_clear  = cursor_end[1];
+            rolling_mask_enable = '1;
+        }
+    }
+
+    // Worker pop selection logic
+    always_comb {
+        min_worker_idx  = '0;
+        next_a          = '0;
+        next_b          = '0;
+        worker_mask_pop = '0;
+
+        // Find first non-empty worker as starting point (iterate backwards so lowest index wins)
+        for _i: u32 in 0..WORKERS {
+            let i: u32 = WORKERS - 1 - _i;
+            if !worker_mask_empty[i] {
+                min_worker_idx = i as WORKERS_IDX;
+            }
+        }
+
+        // Compare only non-empty workers to find minimum
+        for i: u32       in 0..WORKERS {
+            let curr_top: logic<64> = worker_tops[i];
+            let min_top : logic<64> = worker_tops[min_worker_idx];
+
+            if !worker_mask_empty[i] && curr_top <: min_top {
+                min_worker_idx = i as WORKERS_IDX;
+            }
+        }
+
+        if state == State::Drain {
+            worker_mask_pop[min_worker_idx] = '1;
+        }
+
+        // Heap entry format: {distance[43:0], idx_a[9:0], idx_b[9:0]}
+        // Derive indices combinationally from the selected worker's top
+        let selected_top: logic<64> = worker_tops[min_worker_idx];
+        next_a       = selected_top[2 * IDX_BITS - 1:IDX_BITS] as SIZE_IDX;
+        next_b       = selected_top[IDX_BITS - 1:0] as SIZE_IDX;
+    }
+
+    always_comb {
+        drain = case state {
+            State::StartDrain: '1,
+            State::Drain     : '1,
+            default          : '0,
+        };
+
+        union_valid = case state {
+            State::Drain: worker_mask_busy == '0 && !union_busy,
+            default     : '0,
+        };
+    }
+
+    always_comb {
+        o_finished = state == State::Done && !union_busy;
+    }
+}

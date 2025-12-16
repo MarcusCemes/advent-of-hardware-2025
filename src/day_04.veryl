@@ -9,11 +9,11 @@ pub module Day04 #(
     clk: input clock,
     rst: input reset,
 
-    i_data     : input  logic<BYTES, 8>          ,
-    i_available: input  logic<$clog2(BYTES + 1)> ,
-    o_consumed : output logic<$clog2(BYTES + 1)> ,
-    o_finished : output logic                    ,
-    o_answer   : output logic<64>                ,
+    i_data     : input  logic<BYTES, 8>         ,
+    i_available: input  logic<$clog2(BYTES + 1)>,
+    o_consumed : output logic<$clog2(BYTES + 1)>,
+    o_finished : output logic                   ,
+    o_answer   : output logic<64>               ,
 ) {
     // Map new interface to internal signals
     let i_byte : logic<8> = i_data[0];
@@ -49,7 +49,7 @@ pub module Day04 #(
     ) (
         clk                  ,
         rst                  ,
-        i_data  : i_byte     ,
+        i_data : i_byte      ,
         i_valid              ,
         o_done : decoder_done,
         o_row  : decoder_row ,
@@ -298,9 +298,10 @@ embed (inline) sv{{{
         logic clk, rst;
         longint cycle_count;
 
-        logic [BYTES-1:0][7:0] i_data;
         logic [IDX_BITS-1:0] i_available;
         logic [IDX_BITS-1:0] o_consumed;
+        logic [BYTES-1:0][7:0] i_data;
+        logic i_eof;
         logic o_finished;
         logic [63:0] o_answer;
 

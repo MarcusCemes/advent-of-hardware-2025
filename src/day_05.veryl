@@ -1,179 +1,118 @@
-/// Day 5 Part 2: Merge overlapping ranges and count total coverage
+/// Day 05: Range Merger
 ///
-/// Input format: Lines of "start-end" ranges, followed by blank line, then IDs (ignored).
-/// Output: Sum of coverage across all merged disjoint ranges.
+/// Parses ranges (e.g., "3-5", "10-14") from input and merges overlapping ranges,
+/// then counts total coverage.
 ///
-/// Two ranges overlap or touch if: end1 + 1 >= start2 AND end2 + 1 >= start1
+/// IMPORTANT: This solution requires BYTES to be large enough to encompass an entire
+/// line at once (processes one line per cycle). The decoder assumes the full range
+/// specification (e.g., "123-456\n") fits within a single BYTES-wide input buffer.
+/// With the default BYTES=32 in the decoder, lines up to 32 characters are supported.
 pub module Day05 #(
-    param BYTES: u32 = 1,
+    param BYTES: u32 = 32,
 ) (
     clk: input clock,
     rst: input reset,
 
-    i_data     : input  logic<BYTES, 8>          ,
-    i_available: input  logic<$clog2(BYTES + 1)> ,
-    o_consumed : output logic<$clog2(BYTES + 1)> ,
-    o_finished : output logic                    ,
-    o_answer   : output logic<64>                ,
+    i_available: input logic<IDX_BITS>,
+    i_data     : input logic<BYTES, 8>,
+    i_eof      : input logic          ,
+
+    o_consumed: output logic<IDX_BITS>,
+    o_finished: output logic          ,
+    o_answer  : output logic<64>      ,
 ) {
-    // Map new interface to internal signals
-    let i_byte : logic<8> = i_data[0];
-    let i_valid: logic    = i_available != 0;
-    var o_busy : logic;
+    const IDX_BITS: u32 = $clog2(BYTES + 1);
 
-    // Output mapping
-    always_comb {
-        o_consumed = i_available;
-        if o_busy {
-            o_consumed = 0;
-        }
-        o_finished = solver_valid;
-    }
-
-    var decoder_start      : logic<64>;
-    var decoder_end        : logic<64>;
-    var decoder_range_valid: logic    ;
-    var decoder_done       : logic    ;
-    var decoder_busy       : logic    ;
-    var solver_busy        : logic    ;
-    var solver_valid       : logic    ;
+    var decoder_done : logic    ;
+    var decoder_end  : logic<64>;
+    var decoder_start: logic<64>;
+    var decoder_valid: logic    ;
+    var solver_busy  : logic    ;
 
     inst decoder: Day05Decoder (
-        clk                               ,
-        rst                               ,
-        i_data       : i_byte             ,
-        i_valid                           ,
-        i_busy       : solver_busy        ,
-        o_start      : decoder_start      ,
-        o_end        : decoder_end        ,
-        o_range_valid: decoder_range_valid,
-        o_done       : decoder_done       ,
-        o_busy       : decoder_busy       ,
+        clk                       ,
+        rst                       ,
+        i_available               ,
+        i_busy     : solver_busy  ,
+        i_data                    ,
+        i_eof                     ,
+        o_consumed                ,
+        o_done     : decoder_done ,
+        o_end      : decoder_end  ,
+        o_start    : decoder_start,
+        o_valid    : decoder_valid,
     );
 
     inst solver: Day05Solver (
-        clk                               ,
-        rst                               ,
-        i_start      : decoder_start      ,
-        i_end        : decoder_end        ,
-        i_range_valid: decoder_range_valid,
-        i_done       : decoder_done       ,
-        o_answer                          ,
-        o_busy       : solver_busy        ,
-        o_valid      : solver_valid       ,
+        clk                      ,
+        rst                      ,
+        i_done    : decoder_done ,
+        i_end     : decoder_end  ,
+        i_start   : decoder_start,
+        i_valid   : decoder_valid,
+        o_answer                 ,
+        o_busy    : solver_busy  ,
+        o_finished               ,
     );
-
-    assign o_busy = decoder_busy;
 }
 
-/// Parses "start-end" lines from input stream.
-/// Emits (start, end) pairs, signals done after blank line and end of input.
-module Day05Decoder (
+module Day05Decoder #(
+    param BYTES : u32 = 32,
+    param DIGITS: u32 = 15,
+) (
     clk: input clock,
     rst: input reset,
 
-    i_data : input logic<8>,
-    i_valid: input logic   ,
-    i_busy : input logic   ,
+    i_available: input logic<IDX_BITS>,
+    i_busy     : input logic          ,
+    i_data     : input logic<BYTES, 8>,
+    i_eof      : input logic          ,
 
-    o_start      : output logic<64>,
-    o_end        : output logic<64>,
-    o_range_valid: output logic    ,
-    o_done       : output logic    ,
-    o_busy       : output logic    ,
+    o_consumed: output logic<IDX_BITS>,
+    o_done    : output logic          ,
+    o_end     : output logic<64>      ,
+    o_start   : output logic<64>      ,
+    o_valid   : output logic          ,
 ) {
-    enum State: logic<3> {
-        ParseStart,
-        ParseEnd,
-        EmitRange,
-        Consume,
+    const IDX_BITS: u32 = $clog2(BYTES + 1);
+
+    enum State: logic {
+        Parse,
         Done,
     }
 
-    var state     : State    ;
-    var start_val : logic<64>;
-    var end_val   : logic<64>;
-    var prev_valid: logic    ;
+    var consumed: logic<IDX_BITS>;
+    var values  : logic<2, 64>   ;
+    var valid   : logic          ;
 
-    var is_digit  : logic   ;
-    var is_dash   : logic   ;
-    var is_newline: logic   ;
-    var digit_val : logic<4>;
+    inst parser: ParseNumbers #(
+        BYTES              ,
+        COUNT      : 2     ,
+        MAX_DIGITS : DIGITS,
+        SEPARATOR  : 8'h2D , // '-'
+        OUTPUT_BITS: 64    ,
+    ) (
+        i_available          ,
+        i_data               ,
+        o_consumed : consumed,
+        o_valid    : valid   ,
+        o_values   : values  ,
+    );
 
+    // Output signals
     always_comb {
-        is_digit   = i_data >= "0" && i_data <= "9";
-        is_dash    = i_data == "-";
-        is_newline = i_data == 8'h0A;
-        digit_val  = i_data[3:0];
-    }
+        // Halt once we hit the double newline (first is consumed)
+        o_done = i_available != '0 && i_data[0] == 8'h0A; // '\n'
 
-    always_ff {
-        if_reset {
-            state      = State::ParseStart;
-            start_val  = 0;
-            end_val    = 0;
-            prev_valid = 0;
-        } else {
-            prev_valid = i_valid;
+        o_start = values[0];
+        o_end   = values[1];
+        o_valid = valid && !o_done;
 
-            case state {
-                State::ParseStart: {
-                    if i_valid {
-                        if is_digit {
-                            start_val = start_val * 10 + {60'b0, digit_val};
-                        } else if is_dash {
-                            state = State::ParseEnd;
-                        } else if is_newline && start_val == 0 {
-                            state = State::Consume;
-                        }
-                    }
-                }
+        o_consumed = 0;
 
-                State::ParseEnd: {
-                    if i_valid {
-                        if is_digit {
-                            end_val = end_val * 10 + {60'b0, digit_val};
-                        } else if is_newline {
-                            state = State::EmitRange;
-                        }
-                    }
-                }
-
-                State::EmitRange: {
-                    if !i_busy {
-                        end_val = 0;
-
-                        // Process incoming character to avoid data loss during handshake
-                        if i_valid && is_digit {
-                            start_val = {60'b0, digit_val};
-                            state     = State::ParseStart;
-                        } else if i_valid && is_newline {
-                            start_val = 0;
-                            state     = State::Consume;
-                        } else {
-                            start_val = 0;
-                            state     = State::ParseStart;
-                        }
-                    }
-                }
-
-                State::Consume: {
-                    if !i_valid && prev_valid {
-                        state = State::Done;
-                    }
-                }
-
-                default: {}
-            }
+        if !i_busy {
+            o_consumed = consumed;
         }
-    }
-
-    always_comb {
-        o_start       = start_val;
-        o_end         = end_val;
-        o_range_valid = state == State::EmitRange;
-        o_done        = state == State::Done;
-        o_busy        = state == State::EmitRange && i_busy;
     }
 }
 
@@ -183,14 +122,14 @@ module Day05Solver (
     clk: input clock,
     rst: input reset,
 
-    i_start      : input logic<64>,
-    i_end        : input logic<64>,
-    i_range_valid: input logic    ,
-    i_done       : input logic    ,
+    i_done : input logic    ,
+    i_end  : input logic<64>,
+    i_start: input logic<64>,
+    i_valid: input logic    ,
 
-    o_answer: output logic<64>,
-    o_busy  : output logic    ,
-    o_valid : output logic    ,
+    o_answer  : output logic<64>,
+    o_busy    : output logic    ,
+    o_finished: output logic    ,
 ) {
     const MAX_RANGES: u32 = 128;
 
@@ -215,8 +154,6 @@ module Day05Solver (
     var cur_end  : logic<64>        ;
     var scan_mask: logic<MAX_RANGES>;
 
-    var prev_range_valid  : logic            ;
-    var range_valid_rising: logic            ;
     var overlap_mask      : logic<MAX_RANGES>;
     var first_overlap_idx : logic<7>         ;
     var has_overlap       : logic            ;
@@ -227,8 +164,93 @@ module Day05Solver (
     var count_mask        : logic<MAX_RANGES>;
     var answer            : logic<64>        ;
 
-    always_comb {
-        range_valid_rising = i_range_valid && !prev_range_valid;
+    always_ff {
+        if_reset {
+            state        = State::Idle;
+            occupied     = '0;
+            cur_start    = '0;
+            cur_end      = '0;
+            scan_mask    = '0;
+            count_mask   = '0;
+            answer       = '0;
+            ranges_start = '{default: '0};
+            ranges_end   = '{default: '0};
+
+        } else {
+            case state {
+                State::Idle: {
+                    if i_done {
+                        state = State::CountInit;
+
+                    } else if i_valid {
+                        cur_start = i_start;
+                        cur_end   = i_end;
+                        scan_mask = ~128'b0;
+                        state     = State::ScanOverlap;
+                    }
+                }
+
+                State::ScanOverlap: {
+                    if has_overlap {
+                        state = State::MergeOne;
+                    } else {
+                        state = State::FindSlot;
+                    }
+                }
+
+                State::MergeOne: {
+                    let idx: logic<7> = first_overlap_idx;
+
+                    if ranges_start[idx] <= cur_start {
+                        cur_start = ranges_start[idx];
+                    }
+
+                    if ranges_end[idx] >= cur_end {
+                        cur_end = ranges_end[idx];
+                    }
+
+                    occupied[idx]  = 0;
+                    scan_mask[idx] = 0;
+                    state          = State::ScanOverlap;
+                }
+
+                State::FindSlot: {
+                    if has_empty {
+                        state = State::Insert;
+                    } else {
+                        state = State::Idle;
+                    }
+                }
+
+                State::Insert: {
+                    let idx              : logic<7> = first_empty_idx;
+                    ranges_start[idx] = cur_start;
+                    ranges_end[idx]   = cur_end;
+                    occupied[idx]     = 1;
+                    state             = State::Idle;
+                }
+
+                State::CountInit: {
+                    count_mask = occupied;
+                    answer     = 0;
+                    state      = State::CountScan;
+                }
+
+                State::CountScan: {
+                    if has_occupied {
+                        let idx            : logic<7>  = first_occupied_idx;
+                        let size           : logic<64> = ranges_end[idx] - ranges_start[idx] + 1;
+                        answer          = answer + size;
+                        count_mask[idx] = 0;
+
+                    } else {
+                        state = State::Done;
+                    }
+                }
+
+                default: {}
+            }
+        }
     }
 
     // Overlap detection: ranges overlap or touch if end1+1 >= start2 AND end2+1 >= start1
@@ -277,99 +299,10 @@ module Day05Solver (
         }
     }
 
-    always_ff {
-        if_reset {
-            state            = State::Idle;
-            occupied         = 0;
-            cur_start        = 0;
-            cur_end          = 0;
-            scan_mask        = 0;
-            count_mask       = 0;
-            answer           = 0;
-            prev_range_valid = 0;
-            ranges_start     = '{default: 0};
-            ranges_end       = '{default: 0};
-        } else {
-            if state == State::Idle {
-                prev_range_valid = i_range_valid;
-            }
-
-            case state {
-                State::Idle: {
-                    if range_valid_rising {
-                        cur_start        = i_start;
-                        cur_end          = i_end;
-                        scan_mask        = ~128'b0;
-                        state            = State::ScanOverlap;
-                        prev_range_valid = 0;
-                    } else if i_done {
-                        state = State::CountInit;
-                    }
-                }
-
-                State::ScanOverlap: {
-                    if has_overlap {
-                        state = State::MergeOne;
-                    } else {
-                        state = State::FindSlot;
-                    }
-                }
-
-                State::MergeOne: {
-                    let idx: logic<7> = first_overlap_idx;
-                    if ranges_start[idx] <: cur_start {
-                        cur_start = ranges_start[idx];
-                    }
-                    if ranges_end[idx] >: cur_end {
-                        cur_end = ranges_end[idx];
-                    }
-                    occupied[idx]  = 0;
-                    scan_mask[idx] = 0;
-                    state          = State::ScanOverlap;
-                }
-
-                State::FindSlot: {
-                    if has_empty {
-                        state = State::Insert;
-                    } else {
-                        state = State::Idle;
-                    }
-                }
-
-                State::Insert: {
-                    let idx              : logic<7> = first_empty_idx;
-                    ranges_start[idx] = cur_start;
-                    ranges_end[idx]   = cur_end;
-                    occupied[idx]     = 1;
-                    state             = State::Idle;
-                }
-
-                State::CountInit: {
-                    count_mask = occupied;
-                    answer     = 0;
-                    state      = State::CountScan;
-                }
-
-                State::CountScan: {
-                    if has_occupied {
-                        let idx            : logic<7>  = first_occupied_idx;
-                        let size           : logic<64> = ranges_end[idx] - ranges_start[idx] + 1;
-                        answer          = answer + size;
-                        count_mask[idx] = 0;
-                    } else {
-                        state = State::Done;
-                    }
-                }
-
-                default: {}
-            }
-        }
-    }
-
     always_comb {
-        o_answer = answer;
-        o_busy   = state != State::Idle && state != State::Done;
-        o_valid  = state == State::Done;
+        o_answer   = answer;
+        o_busy     = state != State::Idle && state != State::Done;
+        o_finished = state == State::Done;
     }
 }
 
@@ -380,28 +313,38 @@ embed (inline) sv{{{
     module test_day_05;
         localparam string   FILENAME = "day_05.txt";
         localparam longint  EXPECTED = 64'd14;
-        localparam longint  TIMEOUT  = 100000;
+        localparam longint  TIMEOUT  = 10000;
 
-        localparam BYTES    = 1;
+        localparam BYTES    = 32;
         localparam IDX_BITS = $clog2(BYTES + 1);
 
         logic clk, rst;
         longint cycle_count;
 
-        logic [BYTES-1:0][7:0] i_data;
         logic [IDX_BITS-1:0] i_available;
         logic [IDX_BITS-1:0] o_consumed;
+        logic [BYTES-1:0][7:0] i_data;
+        logic i_eof;
         logic o_finished;
         logic [63:0] o_answer;
 
-        aoc_Day05 #(.BYTES(BYTES)) dut (
-            .clk(clk), .rst(rst),
-            .i_data(i_data), .i_available(i_available),
-            .o_consumed(o_consumed), .o_finished(o_finished),
+        aoc_Day05 #(
+            .BYTES(BYTES)
+        ) dut (
+            .clk(clk),
+            .rst(rst),
+            .i_available(i_available),
+            .i_data(i_data),
+.            i_eof(i_eof),
+            .o_consumed(o_consumed),
+            .o_finished(o_finished),
             .o_answer(o_answer)
         );
 
-        initial begin clk = 0; forever #0.5 clk = ~clk; end
+        initial begin
+            clk = 0;
+            forever #0.5 clk = ~clk;
+        end
 
         `include "aoc_tasks.svh"
 

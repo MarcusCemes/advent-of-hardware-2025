@@ -4,20 +4,20 @@ pub module Day03 #(
     clk: input clock,
     rst: input reset,
 
-    i_data     : input  logic<BYTES, 8>          ,
-    i_available: input  logic<$clog2(BYTES + 1)> ,
-    o_consumed : output logic<$clog2(BYTES + 1)> ,
-    o_finished : output logic                    ,
-    o_answer   : output logic<64>                ,
+    i_data     : input  logic<BYTES, 8>         ,
+    i_available: input  logic<$clog2(BYTES + 1)>,
+    o_consumed : output logic<$clog2(BYTES + 1)>,
+    o_finished : output logic                   ,
+    o_answer   : output logic<64>               ,
 ) {
     // Configuration constants
-    const NUM_SELECT: u32 = 12;  // Number of digits to select (12 for part 2)
+    const NUM_SELECT: u32 = 12; // Number of digits to select (12 for part 2)
     const MAX_DIGITS: u32 = 100; // Maximum number of digits per line
 
     // Map new interface to internal signals
     let i_byte : logic<8> = i_data[0];
     let i_valid: logic    = i_available != 0;
-    var o_busy : logic;
+    var o_busy : logic   ;
 
     // Track if we've seen input and if it has stopped
     var seen_input   : logic;
@@ -50,8 +50,8 @@ pub module Day03 #(
     }
 
     // Internal signals from decoder
-    var digit_count: logic<8>              ;
-    var digits     : logic<4> [MAX_DIGITS] ;
+    var digit_count: logic<8>             ;
+    var digits     : logic<4> [MAX_DIGITS];
 
     // Control signals (between decoder and solver)
     var decoder_valid: logic;
@@ -63,17 +63,17 @@ pub module Day03 #(
     inst decoder: Day03Decoder #(
         MAX_DIGITS: MAX_DIGITS,
     ) (
-        clk                            ,
-        rst                            ,
-        i_busy         : solver_busy   ,
-        i_data         : i_byte        ,
-        i_valid                        ,
-        i_input_stopped: input_stopped ,
-        o_busy         : decoder_busy  ,
-        o_digit_count  : digit_count   ,
-        o_digits       : digits        ,
-        o_valid        : decoder_valid ,
-        o_done         : decoder_done  ,
+        clk                           ,
+        rst                           ,
+        i_busy         : solver_busy  ,
+        i_data         : i_byte       ,
+        i_valid                       ,
+        i_input_stopped: input_stopped,
+        o_busy         : decoder_busy ,
+        o_digit_count  : digit_count  ,
+        o_digits       : digits       ,
+        o_valid        : decoder_valid,
+        o_done         : decoder_done ,
     );
 
     inst solver: Day03Solver #(
@@ -104,11 +104,11 @@ module Day03Decoder #(
     i_valid        : input logic   ,
     i_input_stopped: input logic   ,
 
-    o_busy       : output logic                   ,
-    o_digit_count: output logic<8>                ,
-    o_digits     : output logic<4> [MAX_DIGITS]   ,
-    o_valid      : output logic                   ,
-    o_done       : output logic                   ,
+    o_busy       : output logic                ,
+    o_digit_count: output logic<8>             ,
+    o_digits     : output logic<4> [MAX_DIGITS],
+    o_valid      : output logic                ,
+    o_done       : output logic                ,
 ) {
     enum State: logic<2> {
         Collect,
@@ -116,10 +116,10 @@ module Day03Decoder #(
         Done,
     }
 
-    var state      : State                    ;
-    var digit_count: logic<8>                 ;
-    var digits     : logic<4> [MAX_DIGITS]    ;
-    var busy       : logic                    ;
+    var state      : State                ;
+    var digit_count: logic<8>             ;
+    var digits     : logic<4> [MAX_DIGITS];
+    var busy       : logic                ;
 
     var s_is_digit  : logic;
     var s_is_newline: logic;
@@ -131,9 +131,10 @@ module Day03Decoder #(
 
     always_ff {
         if_reset {
+            busy        = 0;
+            digits      = '{default: '0};
             state       = State::Collect;
             digit_count = 0;
-            busy        = 0;
 
         } else {
             case state {
@@ -184,15 +185,15 @@ module Day03Decoder #(
 }
 
 module Day03Solver #(
-    param NUM_SELECT: u32 = 12,
+    param NUM_SELECT: u32 = 12 ,
     param MAX_DIGITS: u32 = 100,
 ) (
     clk: input clock,
     rst: input reset,
 
-    i_digit_count: input logic<8>              ,
-    i_digits     : input logic<4> [MAX_DIGITS] ,
-    i_valid      : input logic                 ,
+    i_digit_count: input logic<8>             ,
+    i_digits     : input logic<4> [MAX_DIGITS],
+    i_valid      : input logic                ,
 
     o_answer: output logic<64>,
     o_busy  : output logic    ,
@@ -205,7 +206,7 @@ module Day03Solver #(
 
     var state      : State                 ;
     var answer     : logic<64>             ;
-    var digits     : logic<4> [MAX_DIGITS] ; // Local copy of input digits
+    var digits     : logic<4>  [MAX_DIGITS]; // Local copy of input digits
     var digit_count: logic<8>              ; // Local copy of input count
     var cursor     : logic<8>              ; // Current position in digits array
     var remaining  : logic<8>              ; // How many more digits to select
@@ -243,12 +244,14 @@ module Day03Solver #(
 
     always_ff {
         if_reset {
-            state       = State::Idle;
-            answer      = 0;
-            digit_count = 0;
-            cursor      = 0;
-            remaining   = 0;
             accumulator = 0;
+            answer      = 0;
+            cursor      = 0;
+            digit_count = 0;
+            digits      = '{default: '0};
+            remaining   = 0;
+            state       = State::Idle;
+
         } else {
             case state {
                 State::Idle: {
@@ -306,9 +309,10 @@ embed (inline) sv{{{
         logic clk, rst;
         longint cycle_count;
 
-        logic [BYTES-1:0][7:0] i_data;
         logic [IDX_BITS-1:0] i_available;
         logic [IDX_BITS-1:0] o_consumed;
+        logic [BYTES-1:0][7:0] i_data;
+        logic i_eof;
         logic o_finished;
         logic [63:0] o_answer;
 

@@ -1,0 +1,153 @@
+pub module Day08 #(
+    param BYTES      : u32 = 32 ,
+    param CONNECTIONS: u32 = 10 ,
+    const DIMS       : u32 = 3  ,
+    param DIM_BITS   : u32 = 17 ,
+    param OUTPUT_BITS: u32 = 64 ,
+    param WORKERS    : u32 = 4  ,
+    param QUEUE_DEPTH: u32 = 8  ,
+    param SIZE       : u32 = 128,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_available: input  logic<BYTES_LEN>  ,
+    o_consumed : output logic<BYTES_LEN>  ,
+    i_data     : input  logic<BYTES, 8>   ,
+    i_eof      : input  logic             ,
+    o_finished : output logic             ,
+    o_answer   : output logic<OUTPUT_BITS>,
+) {
+    const BYTES_LEN: u32 = $clog2(BYTES + 1);
+
+    var decoder_finished: logic                ;
+    var decoder_value   : logic<DIMS, DIM_BITS>;
+    var decoder_valid   : logic                ;
+
+    inst decoder: Day08Decoder #(
+        BYTES                ,
+        COUNT      : DIMS    ,
+        MAX_DIGITS : 5       ,
+        OUTPUT_BITS: DIM_BITS,
+    ) (
+        clk                          ,
+        rst                          ,
+        i_available                  ,
+        i_data                       ,
+        i_eof                        ,
+        o_consumed                   ,
+        o_finished : decoder_finished,
+        o_valid    : decoder_valid   ,
+        o_vector   : decoder_value   ,
+    );
+
+    inst orchestrator: Day08Orchestrator #(
+        CONNECTIONS  ,
+        DIMS         ,
+        DIM_BITS     ,
+        OUTPUT_BITS  ,
+        WORKERS      ,
+        QUEUE_DEPTH  ,
+        SIZE         ,
+    ) (
+        clk                         ,
+        rst                         ,
+        i_vector  : decoder_value   ,
+        i_eof     : decoder_finished,
+        i_valid   : decoder_valid   ,
+        o_answer                    ,
+        o_finished                  ,
+    );
+}
+
+module Day08Decoder #(
+    param BYTES      : u32 = 32,
+    param COUNT      : u32 = 3 ,
+    param MAX_DIGITS : u32 = 5 ,
+    param OUTPUT_BITS: u32 = 17,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_available: input logic<IDX_BITS>,
+    i_data     : input logic<BYTES, 8>,
+    i_eof      : input logic          ,
+
+    o_consumed: output logic<IDX_BITS>,
+    o_finished: output logic          ,
+    o_valid   : output logic          ,
+    o_vector  : output logic<3, 17>   ,
+) {
+    const IDX_BITS: u32 = $clog2(BYTES + 1);
+
+    var parse_valid: logic;
+
+    inst parse_numbers: ParseNumbers #(
+        BYTES        ,
+        COUNT        ,
+        MAX_DIGITS   ,
+        OUTPUT_BITS  ,
+    ) (
+        i_data                  ,
+        i_available             ,
+        o_values   : o_vector   ,
+        o_consumed : o_consumed ,
+        o_valid    : parse_valid,
+    );
+
+    always_comb {
+        o_finished = i_eof;
+        o_valid    = parse_valid && !o_finished;
+    }
+}
+
+#[test(test_day_08)]
+embed (inline) sv{{{
+    `timescale 1ns/1ps
+
+    module test_day_08;
+        localparam string   FILENAME = "day_08.txt";
+        localparam longint  EXPECTED = 64'd40;
+        localparam longint  TIMEOUT  = 1000000;
+
+        localparam BYTES    = 32;
+        localparam IDX_BITS = $clog2(BYTES + 1);
+
+        logic clk, rst;
+        longint cycle_count;
+
+        logic [IDX_BITS-1:0] i_available;
+        logic [IDX_BITS-1:0] o_consumed;
+        logic [BYTES-1:0][7:0] i_data;
+        logic i_eof;
+        logic o_finished;
+        logic [63:0] o_answer;
+
+        aoc_Day08 #(
+            .BYTES(BYTES)
+        ) dut (
+            .clk(clk),
+            .rst(rst),
+            .i_available(i_available),
+            .o_consumed(o_consumed),
+            .i_data(i_data),
+            .i_eof(i_eof),
+            .o_finished(o_finished),
+            .o_answer(o_answer)
+        );
+
+        initial begin
+            clk = 0;
+            forever #0.5 clk = ~clk;
+        end
+
+        `include "aoc_tasks.svh"
+
+        initial begin
+            aoc_init();
+            aoc_run_test(FILENAME, TIMEOUT, cycle_count);
+            aoc_verify(EXPECTED, cycle_count);
+            $finish;
+        end
+    endmodule
+}}}

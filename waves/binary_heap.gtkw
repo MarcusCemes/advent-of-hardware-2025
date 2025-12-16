@@ -1,0 +1,48 @@
+[*]
+[*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
+[*] Sun Dec 14 15:36:55 2025
+[*]
+[dumpfile] "/home/marcus/dev/working/advent-of-hardware-2025/src/utils/test_binary_heap.vcd"
+[dumpfile_mtime] "Sun Dec 14 15:31:19 2025"
+[dumpfile_size] 21453
+[savefile] "/home/marcus/dev/working/advent-of-hardware-2025/waves/binary_heap.gtkw"
+[timestart] 0
+[size] 1728 973
+[pos] -1 -1
+*-18.393263 1233900 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] TOP.
+[treeopen] TOP.test_binary_heap.
+[sst_width] 297
+[signals_width] 186
+[sst_expanded] 1
+[sst_vpaned_height] 287
+@28
+TOP.test_binary_heap.clk
+TOP.test_binary_heap.rst
+@200
+-
+@28
+TOP.test_binary_heap.dut.i_pop
+TOP.test_binary_heap.dut.i_push
+TOP.test_binary_heap.dut.i_drain
+@24
+TOP.test_binary_heap.dut.i_node[15:0]
+@200
+-
+@24
+TOP.test_binary_heap.dut.state[2:0]
+@28
+TOP.test_binary_heap.dut.bubble_up
+TOP.test_binary_heap.dut.drain_mode
+@200
+-
+@28
+TOP.test_binary_heap.dut.o_busy
+TOP.test_binary_heap.dut.o_empty
+TOP.test_binary_heap.dut.o_full
+@24
+TOP.test_binary_heap.dut.o_top[15:0]
+@28
+TOP.test_binary_heap.dut.o_top_valid
+[pattern_trace] 1
+[pattern_trace] 0

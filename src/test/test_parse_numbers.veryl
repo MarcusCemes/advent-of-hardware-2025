@@ -1,0 +1,155 @@
+/// Testbench for ParseNumbers module
+/// Tests parsing of comma-separated ASCII numbers with newline delimiter
+
+#[test(test_parse_numbers)]
+embed (inline) sv{{{
+    `timescale 1ns/1ps
+
+    module test_parse_numbers;
+        // Test with BYTES=32, COUNT=3 (three comma-separated numbers)
+        localparam BYTES       = 32;
+        localparam COUNT       = 3;
+        localparam MAX_DIGITS  = 5;
+        localparam OUTPUT_BITS = 32;
+        localparam IDX_BITS    = $clog2(BYTES + 1);
+
+        logic [BYTES-1:0][7:0]             data;
+        logic [IDX_BITS-1:0]               available;
+        logic [IDX_BITS-1:0]               offset;
+        logic [COUNT-1:0][OUTPUT_BITS-1:0] values;
+        logic [IDX_BITS-1:0]               consumed;
+        logic                              valid;
+
+        int test_num;
+        int pass_count;
+        int fail_count;
+
+        aoc_ParseNumbers #(
+            .BYTES      (BYTES),
+            .COUNT      (COUNT),
+            .MAX_DIGITS (MAX_DIGITS),
+            .SEPARATOR  (8'h2C),  // comma
+            .DELIMITER  (8'h0A),  // newline
+            .OUTPUT_BITS(OUTPUT_BITS)
+        ) dut (
+            .i_data     (data),
+            .i_available(available),
+            .i_offset   (offset),
+            .o_values   (values),
+            .o_consumed (consumed),
+            .o_valid    (valid)
+        );
+
+        // Helper task to load string into data array
+        task load_string(input string s);
+            integer len;
+            len = s.len();
+            for (int i = 0; i < BYTES; i++) begin
+                if (i < len)
+                    data[i] = s[i];
+                else
+                    data[i] = 8'h00;
+            end
+            available = len[IDX_BITS-1:0];
+        endtask
+
+        // Check results
+        task check(
+            input string name,
+            input int exp0, input int exp1, input int exp2,
+            input int exp_consumed
+        );
+            logic ok;
+            ok = 1;
+            if (values[0] != exp0[OUTPUT_BITS-1:0]) ok = 0;
+            if (values[1] != exp1[OUTPUT_BITS-1:0]) ok = 0;
+            if (values[2] != exp2[OUTPUT_BITS-1:0]) ok = 0;
+            if (consumed != exp_consumed[IDX_BITS-1:0]) ok = 0;
+            if (!valid) ok = 0;
+
+            if (ok) begin
+                $display("[PASS] Test %0d: %s => [%0d, %0d, %0d], consumed=%0d",
+                         test_num, name, values[0], values[1], values[2], consumed);
+                pass_count = pass_count + 1;
+            end else begin
+                $display("[FAIL] Test %0d: %s", test_num, name);
+                $display("       Expected: [%0d, %0d, %0d], consumed=%0d",
+                         exp0, exp1, exp2, exp_consumed);
+                $display("       Got:      [%0d, %0d, %0d], consumed=%0d, valid=%0d",
+                         values[0], values[1], values[2], consumed, valid);
+                fail_count = fail_count + 1;
+            end
+            test_num = test_num + 1;
+        endtask
+
+        initial begin
+            $dumpfile("test_parse_numbers.vcd");
+            $dumpvars(0, test_parse_numbers);
+
+            // Initialize
+            test_num = 1;
+            pass_count = 0;
+            fail_count = 0;
+            data = '0;
+            available = 0;
+            offset = 0;
+
+            #10;
+
+            // Test 1: Single-digit numbers "1,2,3\n"
+            load_string("1,2,3\n");
+            offset = 0;
+            #10;
+            check("'1,2,3\\n'", 1, 2, 3, 6);
+
+            // Test 2: Multi-digit numbers "12,345,6\n"
+            load_string("12,345,6\n");
+            offset = 0;
+            #10;
+            check("'12,345,6\\n'", 12, 345, 6, 9);
+
+            // Test 3: Maximum digits "12345,67890,11111\n"
+            load_string("12345,67890,11111\n");
+            offset = 0;
+            #10;
+            check("'12345,67890,11111\\n'", 12345, 67890, 11111, 18);
+
+            // Test 4: With offset "XXXXX7,89,100\n"
+            load_string("XXXXX7,89,100\n");
+            offset = 5;
+            #10;
+            check("'XXXXX7,89,100\\n' (offset=5)", 7, 89, 100, 14);
+
+            // Test 5: Zeros "0,0,0\n"
+            load_string("0,0,0\n");
+            offset = 0;
+            #10;
+            check("'0,0,0\\n'", 0, 0, 0, 6);
+
+            // Test 6: Large values "99999,1,50000\n"
+            load_string("99999,1,50000\n");
+            offset = 0;
+            #10;
+            check("'99999,1,50000\\n'", 99999, 1, 50000, 14);
+
+            // Test 7: Mixed lengths "1,23,456\n"
+            load_string("1,23,456\n");
+            offset = 0;
+            #10;
+            check("'1,23,456\\n'", 1, 23, 456, 9);
+
+            // Test 8: All same "100,100,100\n"
+            load_string("100,100,100\n");
+            offset = 0;
+            #10;
+            check("'100,100,100\\n'", 100, 100, 100, 12);
+
+            #10;
+            $display("\n=== Results: %0d passed, %0d failed ===\n", pass_count, fail_count);
+            if (fail_count > 0) begin
+                $error("Some tests failed!");
+            end
+            $finish;
+        end
+    endmodule
+}}}

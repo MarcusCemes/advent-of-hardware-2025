@@ -1,0 +1,172 @@
+module Day08Worker #(
+    param DIM_BITS   : u32 = 17  ,
+    param INDEX      : u32 = 0   ,
+    param OUTPUT_BITS: u32 = 64  ,
+    param QUEUE_DEPTH: u32 = 16  ,
+    param SIZE       : u32 = 1024,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    i_bus  : input logic<DIMS, DIM_BITS>,
+    i_idx  : input logic<SIZE_IDX>      ,
+    i_valid: input logic                ,
+
+    // Control signals
+    i_compare: input logic,
+    i_drain  : input logic,
+    i_pop    : input logic,
+    i_set_ref: input logic,
+
+    o_busy : output logic             ,
+    o_empty: output logic             ,
+    o_top  : output logic<OUTPUT_BITS>,
+) {
+    const DIMS         : u32 = 3;
+    const DISTANCE_BITS: u32 = 36;
+    const IDX_BITS     : u32 = 14;
+    const SIZE_IDX     : u32 = $clog2(SIZE);
+    const WIDTH        : u32 = 64;
+
+    enum State {
+        Insert,
+        Drain,
+    }
+
+    var state: State;
+
+    var idx_a   : logic<SIZE_IDX>      ;
+    var idx_b   : logic<SIZE_IDX>      ;
+    var a       : logic<DIMS, DIM_BITS>;
+    var b       : logic<DIMS, DIM_BITS>;
+    var distance: logic<DISTANCE_BITS> ;
+
+    var queue_empty: logic       ;
+    var queue_full : logic       ;
+    var queue_in   : logic<WIDTH>;
+    var queue_out  : logic<WIDTH>;
+    var queue_pop  : logic       ;
+    var queue_push : logic       ;
+
+    var heap_busy : logic       ;
+    var heap_drain: logic       ;
+    var heap_empty: logic       ;
+    var heap_in   : logic<WIDTH>;
+    var heap_out  : logic<WIDTH>;
+    var heap_pop  : logic       ;
+    var heap_push : logic       ;
+
+    inst queue: $std::fifo #(
+        WIDTH             ,
+        DEPTH: QUEUE_DEPTH,
+    ) (
+        i_clk        : clk        ,
+        i_rst        : rst        ,
+        i_clear      : 0          ,
+        o_empty      : queue_empty,
+        o_almost_full: _          ,
+        o_full       : queue_full ,
+        o_word_count : _          ,
+        i_push       : queue_push ,
+        i_data       : queue_in   ,
+        i_pop        : queue_pop  ,
+        o_data       : queue_out  ,
+    );
+
+    inst heap: BinaryHeap #(
+        SIZE   ,
+        WIDTH  ,
+    ) (
+        clk                ,
+        rst                ,
+        i_push : heap_push ,
+        i_node : heap_in   ,
+        i_drain: heap_drain,
+        i_pop  : heap_pop  ,
+        o_top  : heap_out  ,
+        o_empty: heap_empty,
+        o_full : _         ,
+        o_busy : heap_busy ,
+    );
+
+    always_ff {
+        if_reset {
+            a     = '0;
+            idx_a = '0;
+            state = State::Insert;
+
+        } else {
+            case state {
+                State::Insert: {
+                    if i_drain {
+                        if queue_empty {
+                            state = State::Drain;
+                        }
+
+                    } else if i_set_ref && i_valid {
+                        a     = i_bus;
+                        idx_a = i_idx;
+                    }
+                }
+
+                State::Drain: {
+                    if heap_empty {
+                        state = State::Insert;
+                    }
+                }
+            }
+
+        }
+    }
+
+    // Pack the distance and indices into a single value for the heap
+    always_comb {
+        idx_b    = i_idx;
+        b        = i_bus;
+        queue_in = {distance as DISTANCE_BITS, idx_a as IDX_BITS, idx_b as IDX_BITS};
+    }
+
+    // Compute the squared vector distance
+    always_comb {
+        distance = 0;
+
+        for i: u32                  in 0..3 {
+            let a_ext   : logic<DISTANCE_BITS> = a[i] as DISTANCE_BITS;
+            let b_ext   : logic<DISTANCE_BITS> = b[i] as DISTANCE_BITS;
+            let diff    : logic<DISTANCE_BITS> = a_ext - b_ext;
+            distance += diff * diff;
+        }
+    }
+
+    // Queue and heap control logic
+    always_comb {
+        queue_push = i_compare & i_valid;
+        queue_pop  = !queue_empty & !heap_busy;
+
+        heap_in   = queue_out;
+        heap_push = queue_pop;
+        heap_pop  = '0;
+
+        if state == State::Drain {
+            heap_pop = i_pop & i_valid;
+        }
+
+        // Gate drain to heap: only signal when queue is empty and heap is idle
+        heap_drain = i_drain & queue_empty & !heap_busy;
+    }
+
+    // Output signals
+    always_comb {
+        o_busy = case state {
+            State::Insert: queue_full & i_compare | !queue_empty & i_drain,
+            default      : heap_busy,
+        };
+
+        o_empty = case state {
+            State::Insert: queue_empty,
+            default      : heap_empty,
+        };
+
+        o_top = heap_out;
+    }
+}
