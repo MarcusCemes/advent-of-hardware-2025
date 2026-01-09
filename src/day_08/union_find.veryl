@@ -188,7 +188,7 @@ module Day08UnionFind #(
 
                             // If the roots are the same, they are already connected
                             if current_a == current_b {
-                                state    = State::Idle;
+                                state = State::Idle;
                             } else {
                                 larger_root = if stored_size_a >= stored_size_b ? current_a : current_b;
                                 state       = State::Union;
@@ -198,7 +198,7 @@ module Day08UnionFind #(
                 }
 
                 State::Union: {
-                    state    = State::PathCompress;
+                    state = State::PathCompress;
                 }
 
                 State::PathCompress: {
@@ -209,7 +209,7 @@ module Day08UnionFind #(
 
                 State::Count: {
                     if cursor_end {
-                        state    = State::Done;
+                        state = State::Done;
                     } else {
                         cursor += 1;
                     }

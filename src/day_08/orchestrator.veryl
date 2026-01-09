@@ -22,7 +22,7 @@ module Day08Orchestrator #(
     const SIZE_IDX       : u32 = $clog2(SIZE);
     const SIZE_IDX_EXT   : u32 = $clog2(SIZE + WORKERS);
     const SIZE_LEN       : u32 = $clog2(SIZE + 1);
-    const WORKERS_IDX    : u32 = $clog2(WORKERS);
+    const WORKERS_IDX    : u32 = if WORKERS == 1 ? 1 : $clog2(WORKERS);
 
     enum State {
         Init,

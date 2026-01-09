@@ -1,351 +1,409 @@
+/// BinaryHeap keeps the K-smallest nodes for each worker during collection and
+/// replays them in ascending order during drain. The module is split into two
+/// phases:
+///
+/// * **Collection (max-heap)**
+///   - `o_will_accept` goes high when the heap has space or the incoming node is
+///     smaller than the current root, allowing for immediate rejection.
+///   - Accepted nodes bubble up like a standard binary heap. When the heap is full,
+///     inserting a better candidate replaces the root and bubbles down immediately.
+///
+/// * **Drain (min-heap)**
+///   - When `i_drain` is asserted the heap runs Floyd's heapify bottom-up to turn
+///     the stored values into a min-heap.
+///   - Once heapify completes, `i_pop` removes the smallest remaining entry and
+///     re-exposes the next root.
 module BinaryHeap #(
-    /// Total elements allowed in heap.
-    param SIZE: u32 = 1024,
-
-    /// Width of stored node; full width is the comparison key.
-    param WIDTH: u32 = 64,
+    param SIZE : u32 = 1024,
+    param WIDTH: u32 = 64  ,
 ) (
     clk: input clock,
     rst: input reset,
 
-    // Collection mode: push elements (keeps K-smallest)
-    i_push: input logic       ,
-    i_node: input logic<WIDTH>,
-
-    // Drain mode: triggers heapify, then pop smallest elements
-    i_drain: input logic,
-    i_pop  : input logic,
-
-    o_top: output logic<WIDTH>,
-
-    o_empty: output logic,
-    o_full : output logic,
-    o_busy : output logic,
+    i_push       : input  logic       ,
+    i_node       : input  logic<WIDTH>,
+    i_drain      : input  logic       ,
+    i_pop        : input  logic       ,
+    o_will_accept: output logic       ,
+    o_top        : output logic<WIDTH>,
+    o_empty      : output logic       ,
+    o_full       : output logic       ,
+    o_busy       : output logic       ,
 ) {
-    // SIZE_LEN: bits needed for length counter (0 to SIZE inclusive)
-    // IDX_LEN: bits needed for array indices (0 to SIZE-1)
-    const SIZE_LEN: u32 = $clog2(SIZE + 1);
-    const IDX_LEN : u32 = $clog2(SIZE);
+    const CHILD_IDX_LEN: u32 = $clog2(SIZE * 2 + 2);
+    const IDX_LEN      : u32 = $clog2(SIZE);
+    const SIZE_LEN     : u32 = $clog2(SIZE + 1);
 
-    enum State: logic<3> {
-        Idle,
-        BubbleRead,
-        BubbleCompare,
-        BubbleWrite,
-        Update,
+    enum State {
+        CollectIdle,
+        InsertAtEnd,
+        ReplaceRoot,
+        BubbleUpA,
+        BubbleUpB,
+        BubbleDownA,
+        BubbleDownB,
+        HeapifyInit,
+        HeapifyRead,
+        HeapifyStart,
         HeapifyNext,
+        DrainIdle,
+        PopReadLast,
+        PopMoveEnd,
     }
 
-    var heap_data  : logic<WIDTH>    [SIZE];
-    var heap_length: logic<SIZE_LEN>       ;
-    var heap_full  : logic                 ;
-    var heap_empty : logic                 ;
+    var state      : State;
+    var is_min_heap: logic;
 
-    var state: State;
+    var heap_size  : logic<SIZE_LEN>;
+    var current_idx: logic<IDX_LEN> ;
+    var heapify_idx: logic<IDX_LEN> ;
 
-    // Drain mode: 0 = collection (max-heap), 1 = drain (min-heap)
-    var drain_mode: logic;
+    var val_current: logic<WIDTH>;
 
-    // Heapify index: walks from last parent down to 0
-    var heapify_idx: logic<SIZE_LEN>;
+    var idx_parent : logic<IDX_LEN>      ;
+    var idx_left   : logic<CHILD_IDX_LEN>;
+    var idx_right  : logic<CHILD_IDX_LEN>;
+    var idx_target : logic<IDX_LEN>      ;
+    var swap_needed: logic               ;
 
-    var working_node: logic<WIDTH>;
-    var working_key : logic<WIDTH>;
-    var parent_node : logic<WIDTH>;
-    var left_node   : logic<WIDTH>;
-    var right_node  : logic<WIDTH>;
+    // RAM signals
+    var addr_a: logic<IDX_LEN>;
+    var addr_b: logic<IDX_LEN>;
+    var in_a  : logic<WIDTH>  ;
+    var in_b  : logic<WIDTH>  ;
+    var we_a  : logic         ;
+    var we_b  : logic         ;
+    var out_a : logic<WIDTH>  ;
+    var out_b : logic<WIDTH>  ;
 
-    var insert_idx: logic<SIZE_LEN>;
-    var swap_idx  : logic<SIZE_LEN>;
-    var left_idx  : logic<SIZE_LEN>;
-    var right_idx : logic<SIZE_LEN>;
+    inst ram: DualPortRam #(
+        SIZE     : SIZE ,
+        WORD_SIZE: WIDTH,
+    ) (
+        clk     : clk   ,
+        rst     : rst   ,
+        i_addr_a: addr_a,
+        i_data_a: in_a  ,
+        i_we_a  : we_a  ,
+        i_addr_b: addr_b,
+        i_data_b: in_b  ,
+        i_we_b  : we_b  ,
+        o_data_a: out_a ,
+        o_data_b: out_b ,
+    );
 
-    var bubble_up   : logic;
-    var inserted_new: logic;
-    var pending_pop : logic;
+    always_comb {
+        idx_parent = (current_idx - 1) >> 1;
+        idx_left   = (((current_idx as CHILD_IDX_LEN) << 1) + 1);
+        idx_right  = (((current_idx as CHILD_IDX_LEN) << 1) + 2);
 
-    // Effective heap length during maintenance (needed so pop doesn't
-    // treat the removed last element as still part of the heap).
-    var active_length: logic<SIZE_LEN>;
+        idx_target  = current_idx;
+        swap_needed = 0;
+
+        case state {
+            State::BubbleUpB: {
+                if current_idx >: 0 && out_a <: val_current {
+                    swap_needed = 1;
+                    idx_target  = idx_parent;
+                }
+            }
+
+            State::BubbleDownB: {
+                let has_left       : logic = (idx_left <: (heap_size as CHILD_IDX_LEN));
+                let has_right      : logic = (idx_right <: (heap_size as CHILD_IDX_LEN));
+                var target_is_left : logic;
+                var target_is_right: logic;
+
+                target_is_left  = 0;
+                target_is_right = 0;
+
+                if !is_min_heap { // Max Heap
+                    if has_left && out_a >: val_current {
+                        if has_right && out_b >: out_a {
+                            target_is_right = 1;
+
+                        } else {
+                            target_is_left = 1;
+                        }
+
+                    } else if has_right && out_b >: val_current {
+                        target_is_right = 1;
+                    }
+
+                } else { // Min Heap
+                    if has_left && out_a <: val_current {
+                        if has_right && out_b <: out_a {
+                            target_is_right = 1;
+
+                        } else {
+                            target_is_left = 1;
+                        }
+
+                    } else if has_right && out_b <: val_current {
+                        target_is_right = 1;
+                    }
+                }
+
+                if target_is_left {
+                    idx_target  = idx_left as IDX_LEN;
+                    swap_needed = 1;
+
+                } else if target_is_right {
+                    idx_target  = idx_right as IDX_LEN;
+                    swap_needed = 1;
+                }
+
+            }
+            default: {}
+        }
+    }
 
     always_ff {
         if_reset {
-            heap_data   = '{default: '0};
-            heap_length = '0;
-            state       = State::Idle;
-            drain_mode  = 0;
+            heap_size   = '0;
+            state       = State::CollectIdle;
+            is_min_heap = 0;
+            current_idx = '0;
             heapify_idx = '0;
-
-            working_node  = '0;
-            working_key   = '0;
-            parent_node   = '0;
-            left_node     = '0;
-            right_node    = '0;
-            insert_idx    = '0;
-            swap_idx      = '0;
-            left_idx      = '0;
-            right_idx     = '0;
-            bubble_up     = 0;
-            inserted_new  = 0;
-            pending_pop   = 0;
-            active_length = '0;
+            val_current = '0;
 
         } else {
             case state {
-                State::Idle: {
-                    inserted_new = 0;
-                    pending_pop  = 0;
+                State::CollectIdle: {
+                    if i_drain {
+                        state       = State::HeapifyInit;
+                        is_min_heap = 1;
 
-                    active_length = heap_length;
+                    } else if i_push {
+                        if heap_size <: SIZE {
+                            state       = State::InsertAtEnd;
+                            current_idx = heap_size as IDX_LEN;
+                            val_current = i_node;
 
-                    let incoming_key: logic<WIDTH> = i_node;
-                    let root_key    : logic<WIDTH> = heap_data[0];
-
-                    if drain_mode {
-                        // Drain mode: handle pop operations
-                        if i_pop && heap_length == 1 {
-                            // Last element - reset to collection mode
-                            heap_length = 0;
-                            drain_mode  = 0;
-
-                        } else if i_pop && heap_length != 0 {
-                            let last_index: logic<SIZE_LEN> = heap_length - 1;
-
-                            working_node  = heap_data[last_index as IDX_LEN];
-                            working_key   = heap_data[last_index as IDX_LEN];
-                            insert_idx    = 0;
-                            bubble_up     = 0;
-                            pending_pop   = 1;
-                            active_length = heap_length - 1;
-                            state         = State::BubbleRead;
-                        }
-
-                    } else {
-                        // Collection mode: handle push and drain trigger
-                        if i_drain && heap_length != 0 {
-                            // Start heapify: convert max-heap to min-heap
-                            // Start at last parent: (heap_length / 2) - 1
-                            heapify_idx   = (heap_length >> 1) - 1;
-                            active_length = heap_length;
-                            drain_mode    = 1;
-
-                            // Start bubble-down for first heapify index
-                            let first_heapify_idx: logic<SIZE_LEN> = (heap_length >> 1) - 1;
-                            working_node      = heap_data[first_heapify_idx as IDX_LEN];
-                            working_key       = heap_data[first_heapify_idx as IDX_LEN];
-                            insert_idx        = first_heapify_idx;
-                            bubble_up         = 0;
-                            state             = State::BubbleRead;
-
-                        } else if i_push && heap_full && incoming_key <: root_key {
-                            // Replace root (largest) to keep K-smallest.
-                            working_node  = i_node;
-                            working_key   = incoming_key;
-                            insert_idx    = 0;
-                            bubble_up     = 0;
-                            active_length = heap_length;
-                            state         = State::BubbleRead;
-
-                        } else if i_push && !heap_full {
-                            working_node  = i_node;
-                            working_key   = incoming_key;
-                            insert_idx    = heap_length;
-                            bubble_up     = 1;
-                            inserted_new  = 1;
-                            active_length = heap_length + 1;
-                            state         = State::BubbleRead;
+                        } else if o_will_accept {
+                            state       = State::ReplaceRoot;
+                            current_idx = 0;
+                            val_current = i_node;
                         }
                     }
                 }
 
-                State::BubbleRead: {
-                    if bubble_up {
-                        if insert_idx != 0 {
-                            let parent_index: logic<SIZE_LEN> = (insert_idx - 1) >> 1;
-                            parent_node  = heap_data[parent_index as IDX_LEN];
-                        }
+                State::InsertAtEnd: {
+                    heap_size = heap_size + 1;
+                    if current_idx >: 0 {
+                        state = State::BubbleUpA;
 
                     } else {
-                        let l_idx: logic<SIZE_LEN> = (insert_idx << 1) + 1;
-                        let r_idx: logic<SIZE_LEN> = (insert_idx << 1) + 2;
-
-                        left_idx  = l_idx;
-                        right_idx = r_idx;
-
-                        if l_idx <: active_length {
-                            left_node = heap_data[l_idx as IDX_LEN];
-                        } else {
-                            left_node = '0;
-                        }
-
-                        if r_idx <: active_length {
-                            right_node = heap_data[r_idx as IDX_LEN];
-                        } else {
-                            right_node = '0;
-                        }
+                        state = State::CollectIdle;
                     }
-
-                    state = State::BubbleCompare;
                 }
 
-                State::BubbleCompare: {
-                    if bubble_up {
-                        // Bubble-up: only used in collection mode (max-heap)
-                        if insert_idx == 0 {
-                            heap_data[insert_idx as IDX_LEN] = working_node;
-                            state                            = State::Update;
+                State::ReplaceRoot: {
+                    state = State::BubbleDownA;
+                }
+
+                State::BubbleUpA: {
+                    state = State::BubbleUpB;
+                }
+                State::BubbleUpB: {
+                    if swap_needed {
+                        current_idx = idx_parent;
+                        if current_idx >: 0 {
+                            state = State::BubbleUpA;
 
                         } else {
-                            let parent_key: logic<WIDTH> = parent_node;
-
-                            // Max-heap: larger values bubble up
-                            if working_key >: parent_key {
-                                let parent_index: logic<SIZE_LEN> = (insert_idx - 1) >> 1;
-
-                                swap_idx = parent_index;
-                                state    = State::BubbleWrite;
-
-                            } else {
-                                heap_data[insert_idx as IDX_LEN] = working_node;
-                                state                            = State::Update;
-                            }
+                            state = State::CollectIdle;
                         }
 
                     } else {
-                        // Bubble-down: comparison depends on drain_mode
-                        var choose_left: logic;
+                        state = State::CollectIdle;
+                    }
+                }
+                State::BubbleDownA: {
+                    state = State::BubbleDownB;
+                }
+                State::BubbleDownB: {
+                    if swap_needed {
+                        current_idx = idx_target;
+                        state       = State::BubbleDownA;
 
-                        let left_valid : logic = left_idx <: active_length;
-                        let right_valid: logic = right_idx <: active_length;
+                    } else {
+                        if is_min_heap && heapify_idx != '1 {
+                            state = State::HeapifyNext;
 
-                        let left_key : logic<WIDTH> = left_node;
-                        let right_key: logic<WIDTH> = right_node;
-
-                        if !left_valid {
-                            // No children - done bubbling
-                            heap_data[insert_idx as IDX_LEN] = working_node;
-                            state                            = State::Update;
+                        } else if is_min_heap {
+                            state = State::DrainIdle;
 
                         } else {
-                            // Choose which child to potentially swap with
-                            var selected_child: logic<WIDTH>;
-
-                            if drain_mode {
-                                // Min-heap: choose smaller child
-                                choose_left = 1;
-                                if right_valid {
-                                    choose_left = left_key <: right_key;
-                                }
-                            } else {
-                                // Max-heap: choose larger child
-                                choose_left = 1;
-                                if right_valid {
-                                    choose_left = left_key >: right_key;
-                                }
-                            }
-
-                            if choose_left {
-                                swap_idx       = left_idx;
-                                parent_node    = left_node;
-                                selected_child = left_node;
-                            } else {
-                                swap_idx       = right_idx;
-                                parent_node    = right_node;
-                                selected_child = right_node;
-                            }
-
-                            // Decide if swap is needed
-                            var need_swap: logic;
-                            if drain_mode {
-                                // Min-heap: swap if child is smaller
-                                need_swap = selected_child <: working_key;
-                            } else {
-                                // Max-heap: swap if child is larger
-                                need_swap = selected_child >: working_key;
-                            }
-
-                            if need_swap {
-                                state = State::BubbleWrite;
-
-                            } else {
-                                heap_data[insert_idx as IDX_LEN] = working_node;
-                                state                            = State::Update;
-                            }
+                            state = State::CollectIdle;
                         }
                     }
                 }
 
-                State::BubbleWrite: {
-                    heap_data[insert_idx as IDX_LEN] = parent_node;
-                    insert_idx                       = swap_idx;
+                State::HeapifyInit: {
+                    if heap_size >: 1 {
+                        heapify_idx = ((heap_size >> 1) - 1) as IDX_LEN;
+                        state       = State::HeapifyRead;
 
-                    state = State::BubbleRead;
+                    } else {
+                        state       = State::DrainIdle;
+                        heapify_idx = '1;
+                    }
+                }
+                State::HeapifyRead: {
+                    state = State::HeapifyStart;
                 }
 
-                State::Update: {
-                    if inserted_new {
-                        heap_length  += 1;
-                        inserted_new =  0;
-                    }
-
-                    if pending_pop {
-                        heap_length -= 1;
-                        pending_pop =  0;
-
-                        // Check if fully drained
-                        if heap_length == 0 {
-                            drain_mode = 0;
-                        }
-                    }
-
-                    // Check if we're in heapify process
-                    if drain_mode && !pending_pop && !inserted_new {
-                        // During heapify, move to next index
-                        state = State::HeapifyNext;
-                    } else {
-                        state = State::Idle;
-                    }
+                State::HeapifyStart: {
+                    val_current = out_a;
+                    current_idx = heapify_idx;
+                    state       = State::BubbleDownA;
                 }
 
                 State::HeapifyNext: {
-                    if heapify_idx == 0 {
-                        // Heapify complete - ready for draining
-                        state = State::Idle;
+                    if heapify_idx >: 0 {
+                        heapify_idx = heapify_idx - 1;
+                        state       = State::HeapifyRead;
 
                     } else {
-                        // Move to next parent index
-                        let next_idx   : logic<SIZE_LEN> = heapify_idx - 1;
-                        heapify_idx = next_idx;
+                        heapify_idx = '1; // Done
+                        state       = State::DrainIdle;
+                    }
+                }
 
-                        // Start bubble-down for this index
-                        working_node = heap_data[next_idx as IDX_LEN];
-                        working_key  = heap_data[next_idx as IDX_LEN];
-                        insert_idx   = next_idx;
-                        bubble_up    = 0;
-                        state        = State::BubbleRead;
+                State::DrainIdle: {
+                    if i_pop && heap_size >: 0 {
+                        state       = State::PopReadLast;
+                        heapify_idx = '1;
+
+                    } else if heap_size == 0 {
+                        state       = State::CollectIdle;
+                        is_min_heap = 0;
+                    }
+                }
+
+                State::PopReadLast: {
+                    state = State::PopMoveEnd;
+                }
+
+                State::PopMoveEnd: {
+                    val_current = out_a;
+                    heap_size   = heap_size - 1;
+
+                    if heap_size >: 1 {
+                        current_idx = 0;
+                        state       = State::BubbleDownA;
+
+                    } else {
+                        state = State::DrainIdle;
                     }
                 }
 
                 default: {}
             }
-
         }
     }
 
     always_comb {
-        heap_full  = heap_length == SIZE as SIZE_LEN;
-        heap_empty = heap_length == 0;
+        addr_a        = '0;
+        addr_b        = '0;
+        in_a          = '0;
+        in_b          = '0;
+        we_a          = 0;
+        we_b          = 0;
+        o_busy        = 1;
+        o_empty       = (heap_size == 0);
+        o_full        = (heap_size == SIZE);
+        o_will_accept = 0;
+        o_top         = out_a;
 
-        o_full  = heap_full;
-        o_empty = heap_empty;
-        o_busy  = state != State::Idle;
+        case state {
+            State::CollectIdle: {
+                o_busy = 0;
+                addr_a = 0;
+                if heap_size <: SIZE {
+                    o_will_accept = 1;
 
-        o_top = '0;
+                } else {
+                    o_will_accept = (i_node <: out_a);
+                }
+            }
 
-        if !heap_empty {
-            o_top = heap_data[0];
+            State::InsertAtEnd: {
+                addr_b = heap_size as IDX_LEN;
+                in_b   = val_current;
+                we_b   = 1;
+            }
+
+            State::ReplaceRoot: {
+                addr_a = 0;
+                in_a   = val_current;
+                we_a   = 1;
+            }
+
+            State::BubbleUpA: {
+                addr_a = idx_parent;
+            }
+
+            State::BubbleUpB: {
+                if swap_needed {
+                    addr_b = current_idx;
+                    in_b   = out_a;
+                    we_b   = 1;
+                    addr_a = idx_parent;
+                    in_a   = val_current;
+                    we_a   = 1;
+                }
+            }
+
+            State::BubbleDownA: {
+                addr_a = idx_left as IDX_LEN;
+                addr_b = idx_right as IDX_LEN;
+            }
+
+            State::BubbleDownB: {
+                if swap_needed {
+                    addr_b = current_idx;
+
+                    if idx_target == (idx_left as IDX_LEN) {
+                        in_b = out_a;
+
+                    } else {
+                        in_b = out_b;
+                    }
+
+                    we_b   = 1;
+                    addr_a = idx_target;
+                    in_a   = val_current;
+                    we_a   = 1;
+                }
+            }
+
+            State::HeapifyRead: {
+                addr_a = heapify_idx;
+            }
+
+            State::DrainIdle: {
+                o_busy = 0;
+                addr_a = 0;
+            }
+
+            State::PopReadLast: {
+                addr_a = (heap_size - 1) as IDX_LEN;
+            }
+
+            State::PopMoveEnd: {
+                if heap_size - 1 >: 0 {
+                    addr_a = 0;
+                    in_a   = out_a;
+                    we_a   = 1;
+                }
+            }
+
+            default: {}
         }
     }
+
 }
 
 #[test(test_binary_heap)]
@@ -353,39 +411,34 @@ embed (inline) sv{{{
     `timescale 1ns/1ps
 
     module test_binary_heap;
-        localparam SIZE = 8;
-        localparam WIDTH = 16;
-        localparam SIZE_LEN = $clog2(SIZE + 1);
-        localparam TIMEOUT = 10000;
+        localparam SIZE    = 8;
+        localparam WIDTH   = 16;
+        localparam PERIOD  = 10;
+        localparam TIMEOUT = 100_000;
 
-        logic clk, rst;
+        typedef logic [WIDTH-1:0] value_t;
+        typedef int unsigned model_t[$];
 
-        // DUT signals
-        logic i_push;
-        logic [WIDTH-1:0] i_node;
-        logic i_drain;
-        logic i_pop;
+        logic clk;
+        logic rst;
+        logic     i_push;
+        value_t   i_node;
+        logic     i_drain;
+        logic     i_pop;
+        logic     o_will_accept;
+        value_t   o_top;
+        logic     o_empty;
+        logic     o_full;
+        logic     o_busy;
 
-        logic [WIDTH-1:0] o_top;
-        logic o_empty;
-        logic o_full;
-        logic o_busy;
-
-        // Waveform-friendly observation signals
-        logic [WIDTH-1:0] last_pushed;
-        logic [WIDTH-1:0] last_popped;
-        int push_count;
-        int pop_count;
-        logic in_push_phase;
-        logic in_drain_phase;
-        logic in_pop_phase;
-        logic test_pass;
-
-        // Expected values for verification
-        logic [WIDTH-1:0] expected_sorted [8];
+        value_t  initial_values[SIZE];
+        model_t  model;
+        model_t  sorted_model;
+        int      accepted;
+        int      popped;
 
         aoc_BinaryHeap #(
-            .SIZE(SIZE),
+            .SIZE (SIZE ),
             .WIDTH(WIDTH)
         ) dut (
             .clk(clk),
@@ -394,6 +447,7 @@ embed (inline) sv{{{
             .i_node(i_node),
             .i_drain(i_drain),
             .i_pop(i_pop),
+            .o_will_accept(o_will_accept),
             .o_top(o_top),
             .o_empty(o_empty),
             .o_full(o_full),
@@ -402,169 +456,110 @@ embed (inline) sv{{{
 
         initial begin
             clk = 0;
-            forever #5 clk = ~clk;  // 10ns period for clearer waves
+            forever #(PERIOD / 2) clk = ~clk;
         end
 
         initial begin
-            // Initialize all signals
-            rst = 0;
-            i_push = 0;
-            i_node = 0;
-            i_drain = 0;
-            i_pop = 0;
-            last_pushed = 0;
-            last_popped = 0;
-            push_count = 0;
-            pop_count = 0;
-            in_push_phase = 0;
-            in_drain_phase = 0;
-            in_pop_phase = 0;
-            test_pass = 1;
+            rst      = 0;
+            i_push   = 0;
+            i_node   = '0;
+            i_drain  = 0;
+            i_pop    = 0;
+            accepted = 0;
+            popped   = 0;
+            model.delete();
+            sorted_model.delete();
 
-            // Expected K-smallest (K=8), sorted ascending
-            // Push values: 50, 30, 70, 20, 90, 10, 60, 40, 80, 5
-            // K-smallest: 5, 10, 20, 30, 40, 50, 60, 70
-            expected_sorted[0] = 16'd5;
-            expected_sorted[1] = 16'd10;
-            expected_sorted[2] = 16'd20;
-            expected_sorted[3] = 16'd30;
-            expected_sorted[4] = 16'd40;
-            expected_sorted[5] = 16'd50;
-            expected_sorted[6] = 16'd60;
-            expected_sorted[7] = 16'd70;
+            initial_values = '{16'd95, 16'd70, 16'd30, 16'd5, 16'd50, 16'd10, 16'd20, 16'd60};
 
-            // Reset sequence
-            #20;
-            @(posedge clk);
+            repeat (2) @(posedge clk);
             rst = 1;
-            #20;
-
-            $display("[Heap] === PUSH PHASE ===");
-            in_push_phase = 1;
-
-            // Push 10 values, heap keeps 8 smallest
-            push_one(16'd50);
-            push_one(16'd30);
-            push_one(16'd70);
-            push_one(16'd20);
-            push_one(16'd90);
-            push_one(16'd10);
-            push_one(16'd60);
-            push_one(16'd40);
-            push_one(16'd80);  // Should be rejected (90 ejected, 80 > max of k-smallest)
-            push_one(16'd5);   // Should replace 80
-
-            in_push_phase = 0;
-            wait_ready();
-            $display("[Heap] Push phase complete: %0d pushes, full=%0d", push_count, o_full);
-            $display("[Heap] After push - heap contents:");
-            for (int i = 0; i < 8; i++) begin
-                $display("[Heap]   heap[%0d] = %0d", i, dut.heap_data[i]);
-            end
-
-            // Small gap for waveform clarity
-            #50;
-
-            // Start drain
-            $display("[Heap] === DRAIN PHASE (heapify) ===");
-            in_drain_phase = 1;
             @(posedge clk);
-            i_drain = 1;
-            @(posedge clk);
-            i_drain = 0;
 
-            // Wait for heapify
-            wait_ready();
-            in_drain_phase = 0;
-            $display("[Heap] Heapify complete, o_top=%0d", o_top);
-            $display("[Heap] After heapify - heap contents:");
-            for (int i = 0; i < 8; i++) begin
-                $display("[Heap]   heap[%0d] = %0d", i, dut.heap_data[i]);
+            foreach (initial_values[idx]) begin
+                push_accept(initial_values[idx]);
             end
 
-            // Small gap for waveform clarity
-            #50;
+            push_reject(16'd200);
+            push_accept(16'd15);
 
-            // Pop phase
-            $display("[Heap] === POP PHASE ===");
-            in_pop_phase = 1;
+            build_sorted_model();
+            start_drain();
+            drain_all();
 
-            while (!o_empty) begin
-                pop_one();
-            end
-
-            in_pop_phase = 0;
-            $display("[Heap] Pop phase complete: %0d pops", pop_count);
-
-            // Verification
-            #50;
-            $display("[Heap] === VERIFICATION ===");
-            if (pop_count != 8) begin
-                $error("[Heap] FAIL: Expected 8 values, got %0d", pop_count);
-                test_pass = 0;
-            end
-
-            if (test_pass)
-                $display("[Heap] PASS: All tests passed");
-
-            // Check heap is reset
-            if (!o_empty || o_busy) begin
-                $error("[Heap] FAIL: Heap not reset properly");
-                test_pass = 0;
-            end
-
-            #100;
+            assert(popped == sorted_model.size()) else $fatal("pop count mismatch got %0d", popped);
             $finish;
         end
 
-        // Task: wait until not busy
         task wait_ready();
             while (o_busy) @(posedge clk);
         endtask
 
-        // Task: push a single value with waveform-friendly timing
-        task push_one(input logic [WIDTH-1:0] value);
+        task push_accept(input value_t val);
             wait_ready();
+            i_node = val;
+            #1;
+            assert(o_will_accept) else $fatal("push rejected %0d", val);
             @(posedge clk);
             i_push = 1;
-            i_node = value;
-            last_pushed = value;
-            push_count = push_count + 1;
-            $display("[Heap] Push #%0d: %0d (full=%0d, busy=%0d)", push_count, value, o_full, o_busy);
             @(posedge clk);
             i_push = 0;
-            i_node = 0;
+            i_node = '0;
+            accepted++;
+            model_insert(val);
         endtask
 
-        // Task: pop a single value with waveform-friendly timing
-        task pop_one();
+        task push_reject(input value_t val);
             wait_ready();
-            last_popped = o_top;
-
-            // Verify order
-            if (last_popped != expected_sorted[pop_count]) begin
-                $error("[Heap] FAIL: Pop #%0d: expected %0d, got %0d",
-                       pop_count, expected_sorted[pop_count], last_popped);
-                test_pass = 0;
-            end
-
-            $display("[Heap] Pop #%0d: %0d (expected %0d) %s",
-                     pop_count, last_popped, expected_sorted[pop_count],
-                     (last_popped == expected_sorted[pop_count]) ? "OK" : "FAIL");
-
-            pop_count = pop_count + 1;
-
-            @(posedge clk);
-            i_pop = 1;
-            @(posedge clk);
-            i_pop = 0;
+            i_node = val;
+            #1;
+            assert(!o_will_accept) else $fatal("expected reject for %0d", val);
+            i_node = '0;
         endtask
 
-        // Timeout watchdog
+        task build_sorted_model();
+            sorted_model = model;
+            sorted_model.sort();
+            assert(sorted_model.size() > 0) else $fatal("sorted model empty");
+        endtask
+
+        task start_drain();
+            wait_ready();
+            @(posedge clk);
+            i_drain = 1;
+            @(posedge clk);
+            i_drain = 0;
+            wait_ready();
+        endtask
+
+        task drain_all();
+            value_t expected;
+            for (int idx = 0; idx < sorted_model.size(); idx++) begin
+                wait_ready();
+                expected = value_t'(sorted_model[idx]);
+                assert(o_top == expected)
+                    else $fatal("order mismatch expected %0d got %0d", expected, o_top);
+                @(posedge clk);
+                i_pop = 1;
+                @(posedge clk);
+                i_pop = 0;
+                popped++;
+            end
+        endtask
+
+        task model_insert(input value_t val);
+            int unsigned tmp;
+            tmp = val;
+            model.push_back(tmp);
+            model.sort();
+            while (model.size() > SIZE) begin
+                void'(model.pop_back());
+            end
+        endtask
+
         initial begin
-            #(TIMEOUT * 10);
-            $error("[Heap] TIMEOUT");
-            $finish;
+            #(TIMEOUT);
+            $fatal("test timeout state=%0d size=%0d", dut.state, dut.heap_size);
         end
     endmodule
 }}}

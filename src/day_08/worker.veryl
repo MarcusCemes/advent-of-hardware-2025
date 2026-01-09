@@ -56,6 +56,8 @@ module Day08Worker #(
     var heap_pop  : logic       ;
     var heap_push : logic       ;
 
+    var heap_will_accept: logic;
+
     inst queue: $std::fifo #(
         WIDTH             ,
         DEPTH: QUEUE_DEPTH,
@@ -77,16 +79,17 @@ module Day08Worker #(
         SIZE   ,
         WIDTH  ,
     ) (
-        clk                ,
-        rst                ,
-        i_push : heap_push ,
-        i_node : heap_in   ,
-        i_drain: heap_drain,
-        i_pop  : heap_pop  ,
-        o_top  : heap_out  ,
-        o_empty: heap_empty,
-        o_full : _         ,
-        o_busy : heap_busy ,
+        clk                            ,
+        rst                            ,
+        i_push       : heap_push       ,
+        i_node       : heap_in         ,
+        o_will_accept: heap_will_accept,
+        i_drain      : heap_drain      ,
+        i_pop        : heap_pop        ,
+        o_top        : heap_out        ,
+        o_empty      : heap_empty      ,
+        o_full       : _               ,
+        o_busy       : heap_busy       ,
     );
 
     always_ff {
@@ -141,11 +144,27 @@ module Day08Worker #(
     // Queue and heap control logic
     always_comb {
         queue_push = i_compare & i_valid;
-        queue_pop  = !queue_empty & !heap_busy;
 
+        // Default: don't pop, don't push
+        queue_pop = 0;
+        heap_push = 0;
         heap_in   = queue_out;
-        heap_push = queue_pop;
-        heap_pop  = '0;
+
+        if !queue_empty && !heap_busy {
+            // Queue has data, heap is idle.
+            // Check if heap will accept this value.
+            if heap_will_accept {
+                // Accepted: Pop from queue AND Push to heap
+                queue_pop = 1;
+                heap_push = 1;
+            } else {
+                // Rejected: Pop from queue ONLY (discard)
+                queue_pop = 1;
+                heap_push = 0;
+            }
+        }
+
+        heap_pop = '0;
 
         if state == State::Drain {
             heap_pop = i_pop & i_valid;
