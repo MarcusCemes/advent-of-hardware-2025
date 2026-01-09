@@ -335,7 +335,7 @@ embed (inline) sv{{{
             .rst(rst),
             .i_available(i_available),
             .i_data(i_data),
-.            i_eof(i_eof),
+            .i_eof(i_eof),
             .o_consumed(o_consumed),
             .o_finished(o_finished),
             .o_answer(o_answer)
